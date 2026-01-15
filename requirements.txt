@@ -1,0 +1,42 @@
+# Positional Embeddings Comparison Study - Requirements
+# Based on DroPE reference with additions for PoPE implementation
+
+# Core ML frameworks
+torch>=2.0
+transformers>=4.45.0
+datasets>=3.0.0
+huggingface-hub
+
+# Training infrastructure (from DroPE)
+accelerate>=1.0.0
+deepspeed>=0.15.0
+trl>=0.11.0
+peft
+bitsandbytes
+
+# Configuration management
+hydra-core>=1.3.0
+omegaconf
+
+# Tensor operations (for PoPE implementation)
+einops>=0.8.0
+einx>=0.3.0
+
+# Logging and monitoring
+wandb
+tensorboard>=2.18.0
+loguru
+
+# Evaluation and analysis
+evaluate
+scikit-learn
+matplotlib
+numpy
+pandas
+
+# Utilities
+tqdm
+hf-transfer>=0.1.9
+
+# Development
+pytest

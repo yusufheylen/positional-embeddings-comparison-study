@@ -1,0 +1,23 @@
+# RoPE + YaRN configuration
+# Uses HuggingFace rope_scaling for length extrapolation
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "yarn"
+
+# YaRN specific settings
+yarn:
+  factor: 2.0  # Context extension factor (2x = 4096 effective)
+  attention_factor: null  # Auto-computed if not set
+  beta_fast: 32.0
+  beta_slow: 1.0
+
+# Experiment naming
+wandb:
+  tags: ["rope", "yarn", "length-extrapolation"]
+  name: "rope-yarn-smollm360m"
+
+training:
+  output_dir: "./outputs/rope_yarn"

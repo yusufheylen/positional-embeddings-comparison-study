@@ -1,0 +1,54 @@
+# Base configuration for PE comparison study
+# Hyperparameters from PoPE paper (Table 2)
+
+# Model settings
+model:
+  name_or_path: "HuggingFaceTB/SmolLM-360M"
+  torch_dtype: bfloat16
+  attn_implementation: "flash_attention_2"  # or "sdpa", "eager"
+
+# Data settings
+data:
+  dataset_name: "cerebras/SlimPajama-627B"
+  text_column: "text"
+  streaming: true
+  max_length: 2048
+
+# Training settings (from PoPE paper)
+training:
+  output_dir: "./outputs"
+  max_steps: 100000
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 8  # effective batch size = 64
+  learning_rate: 6.0e-4
+  min_learning_rate: 6.0e-5
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_steps: 1000
+  lr_scheduler_type: "cosine"
+
+  # Optimizer
+  optim: "adamw_torch"
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+
+  # Precision
+  bf16: true
+  tf32: true
+
+  # Checkpointing
+  save_steps: 5000
+  save_total_limit: 3
+
+  # Logging
+  logging_steps: 10
+  report_to: "wandb"
+
+# W&B settings
+wandb:
+  project: "pe-comparison-study"
+  entity: null  # Set to your wandb username/team
+  tags: []
+
+# Seed for reproducibility
+seed: 42

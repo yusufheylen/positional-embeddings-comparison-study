@@ -1,0 +1,32 @@
+# DroPE from PoPE configuration
+# Trains with PoPE for 70%, then switches to NoPE
+
+defaults:
+  - base
+
+# PE configuration - starts with PoPE
+pe_type: "pope"
+
+# PoPE specific settings
+pope:
+  base: 10000.0
+  bias_init_zero: true
+
+# DroPE settings
+drope:
+  enabled: true
+  switch_fraction: 0.7  # Switch at 70% of training
+  switch_step: null
+  reset_optimizer: false
+
+# Note: PoPE may need eager attention
+model:
+  attn_implementation: "eager"
+
+# Experiment naming
+wandb:
+  tags: ["drope", "pope-to-nope", "ablation"]
+  name: "drope-from-pope-smollm360m"
+
+training:
+  output_dir: "./outputs/drope_from_pope"

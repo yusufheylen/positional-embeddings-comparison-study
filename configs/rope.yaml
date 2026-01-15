@@ -1,0 +1,16 @@
+# RoPE (Rotary Position Embeddings) configuration
+# Uses HuggingFace native RoPE implementation
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "rope"
+
+# Experiment naming
+wandb:
+  tags: ["rope", "baseline"]
+  name: "rope-smollm360m"
+
+training:
+  output_dir: "./outputs/rope"

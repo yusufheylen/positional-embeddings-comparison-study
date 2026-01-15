@@ -1,0 +1,25 @@
+# PoPE (Polar Positional Embeddings) configuration
+# Trains from scratch with PoPE attention
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "pope"
+
+# PoPE specific settings
+pope:
+  base: 10000.0  # Frequency base
+  bias_init_zero: true  # Zero init for length generalization
+
+# Note: PoPE may need eager attention (no Flash Attention support yet)
+model:
+  attn_implementation: "eager"
+
+# Experiment naming
+wandb:
+  tags: ["pope", "polar", "baseline"]
+  name: "pope-smollm360m"
+
+training:
+  output_dir: "./outputs/pope"
