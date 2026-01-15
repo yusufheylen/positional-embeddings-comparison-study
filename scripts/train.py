@@ -125,9 +125,15 @@ def main():
     )
 
     # Create collator based on attention implementation
+    # Detect actual attention implementation from model (important when "auto" is used)
+    actual_attn_impl = getattr(model.config, "_attn_implementation", None)
+    if actual_attn_impl is None:
+        actual_attn_impl = model_cfg.get("attn_implementation", "sdpa")
+    print(f"Using attention implementation: {actual_attn_impl}")
+
     collator = get_data_collator(
         tokenizer,
-        attn_implementation=model_cfg.get("attn_implementation", "auto"),
+        attn_implementation=actual_attn_impl,
         mask_past_sequences=True,
     )
 

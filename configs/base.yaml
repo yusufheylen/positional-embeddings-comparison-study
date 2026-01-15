@@ -5,11 +5,12 @@
 model:
   name_or_path: "HuggingFaceTB/SmolLM-360M"
   dtype: bfloat16
-  # Attention implementation: "auto" will select best available
-  # - NVIDIA GPU: flash_attention_2 (fastest)
-  # - Apple Silicon / CPU: sdpa (PyTorch native)
-  # - Fallback: eager (slowest, always works)
-  attn_implementation: "auto"
+  # Attention implementation:
+  # - sdpa: PyTorch native, supports 4D attention masks for block diagonal
+  # - flash_attention_2: fastest but requires different collator format
+  # - eager: slowest, always works
+  # Using sdpa for compatibility with block diagonal attention masks
+  attn_implementation: "sdpa"
 
 # Data settings
 data:
