@@ -70,6 +70,13 @@ def tokenize_and_chunk_dataset(
     """
     eos_id = tokenizer.eos_token_id
 
+    if streaming:
+        # For streaming datasets, use a generator-based approach
+        return _create_streaming_chunked_dataset(
+            dataset, tokenizer, text_column, max_length, add_eos
+        )
+
+    # Non-streaming: use standard map operations
     def tokenize_fn(examples):
         return tokenizer(
             examples[text_column],
@@ -99,36 +106,68 @@ def tokenize_and_chunk_dataset(
             "labels": [b[:] for b in input_blocks],
         }
 
-    # Get columns to remove
-    if streaming:
-        # For streaming, features can be None - check both hasattr and not None
-        if hasattr(dataset, "features") and dataset.features is not None:
-            cols = list(dataset.features.keys())
-        elif hasattr(dataset, "column_names") and dataset.column_names is not None:
-            cols = dataset.column_names
-        else:
-            cols = [text_column]
-    else:
-        cols = dataset.column_names
-
-    # Tokenize
-    if streaming:
-        tok_ds = dataset.map(tokenize_fn, batched=True, remove_columns=cols)
-    else:
-        tok_ds = dataset.map(
-            tokenize_fn,
-            batched=True,
-            num_proc=num_proc,
-            remove_columns=cols,
-        )
-
-    # Group into chunks
-    if streaming:
-        chunked_ds = tok_ds.map(group_texts, batched=True)
-    else:
-        chunked_ds = tok_ds.map(group_texts, batched=True, num_proc=num_proc)
+    cols = dataset.column_names
+    tok_ds = dataset.map(
+        tokenize_fn,
+        batched=True,
+        num_proc=num_proc,
+        remove_columns=cols,
+    )
+    chunked_ds = tok_ds.map(group_texts, batched=True, num_proc=num_proc)
 
     return chunked_ds
+
+
+def _create_streaming_chunked_dataset(
+    dataset: IterableDataset,
+    tokenizer: PreTrainedTokenizer,
+    text_column: str,
+    max_length: int,
+    add_eos: bool,
+) -> IterableDataset:
+    """Create a streaming dataset that yields fixed-length chunks.
+
+    Uses a generator to properly handle the chunking for streaming datasets.
+    """
+    eos_id = tokenizer.eos_token_id
+
+    def chunk_generator():
+        buffer_ids = []
+        buffer_attn = []
+
+        for example in dataset:
+            # Tokenize the example
+            text = example[text_column]
+            encoded = tokenizer(
+                text,
+                add_special_tokens=False,
+                return_attention_mask=True,
+            )
+
+            # Add to buffer
+            buffer_ids.extend(encoded["input_ids"])
+            buffer_attn.extend(encoded["attention_mask"])
+
+            # Add EOS between documents
+            if add_eos and eos_id is not None:
+                buffer_ids.append(eos_id)
+                buffer_attn.append(1)
+
+            # Yield complete chunks
+            while len(buffer_ids) >= max_length:
+                chunk_ids = buffer_ids[:max_length]
+                chunk_attn = buffer_attn[:max_length]
+
+                yield {
+                    "input_ids": chunk_ids,
+                    "attention_mask": chunk_attn,
+                    "labels": chunk_ids.copy(),
+                }
+
+                buffer_ids = buffer_ids[max_length:]
+                buffer_attn = buffer_attn[max_length:]
+
+    return IterableDataset.from_generator(chunk_generator)
 
 
 class BlockDiagFromEOSCollator:
