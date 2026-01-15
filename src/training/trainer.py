@@ -1,29 +1,42 @@
-"""Custom trainer with enhanced logging for PE comparison study.
+"""Custom trainer with enhanced logging and checkpoint resumption.
 
-Reference: Adapted from references/DroPE/trainers/logging_trainer.py
+Features:
+- Per-step loss logging
+- Gradient norm tracking
+- Learning rate logging
+- Data skipping for checkpoint resumption
+
+Reference: Adapted from references/DroPE/trainers/
 """
 
+import json
+import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
 from transformers import Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
 
+logger = logging.getLogger(__name__)
+
 
 class PETrainer(Trainer):
-    """Trainer with enhanced logging for positional embedding experiments.
+    """Trainer with enhanced logging and checkpoint resumption support.
 
     Features:
     - Per-step loss logging
     - Gradient norm tracking
     - Learning rate logging
-    - Custom metric logging for PE analysis
+    - Data skipping for checkpoint resumption with streaming datasets
     """
 
     def __init__(
         self,
         *args,
         log_grad_norm: bool = True,
+        skip_samples: int = 0,
         **kwargs,
     ):
         """Initialize PETrainer.
@@ -31,11 +44,27 @@ class PETrainer(Trainer):
         Args:
             *args: Arguments passed to parent Trainer.
             log_grad_norm: Whether to log gradient norms.
+            skip_samples: Number of samples to skip (for resumption).
             **kwargs: Keyword arguments passed to parent Trainer.
         """
         super().__init__(*args, **kwargs)
         self.log_grad_norm = log_grad_norm
+        self.skip_samples = skip_samples
         self._current_loss = None
+        self._samples_seen = 0
+
+    def get_train_dataloader(self):
+        """Get training dataloader with optional sample skipping."""
+        dataloader = super().get_train_dataloader()
+
+        if self.skip_samples > 0:
+            logger.info(f"Skipping {self.skip_samples} samples for resumption")
+            # For streaming datasets, use skip()
+            if hasattr(self.train_dataset, "skip"):
+                self.train_dataset = self.train_dataset.skip(self.skip_samples)
+                dataloader = super().get_train_dataloader()
+
+        return dataloader
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Compute loss and store for logging."""
@@ -48,10 +77,10 @@ class PETrainer(Trainer):
 
         return loss
 
-    def log(self, logs: Dict[str, Any]) -> None:
+    def log(self, logs: Dict[str, Any], start_time: Optional[float] = None) -> None:
         """Enhanced logging with additional metrics."""
         # Add gradient norm if requested
-        if self.log_grad_norm and hasattr(self, "accelerator"):
+        if self.log_grad_norm and self.model is not None:
             try:
                 total_norm = 0.0
                 for p in self.model.parameters():
@@ -66,17 +95,40 @@ class PETrainer(Trainer):
         if self.optimizer is not None:
             logs["learning_rate"] = self.optimizer.param_groups[0]["lr"]
 
-        super().log(logs)
+        super().log(logs, start_time)
 
-    def training_step(self, model, inputs, num_items_in_batch=None):
-        """Training step with optional per-step logging."""
-        loss = super().training_step(model, inputs, num_items_in_batch)
+    def _save_checkpoint(self, model, trial):
+        """Save checkpoint with additional metadata for resumption."""
+        checkpoint_folder = super()._save_checkpoint(model, trial)
 
-        # Log per-step loss at configurable intervals
-        if self.state.global_step % self.args.logging_steps == 0:
-            self.log({"train/step_loss": loss.item()})
+        # Save additional resumption metadata
+        if checkpoint_folder is not None:
+            metadata = {
+                "global_step": self.state.global_step,
+                "samples_seen": self._samples_seen,
+                "epoch": self.state.epoch,
+            }
+            metadata_path = os.path.join(checkpoint_folder, "pe_trainer_state.json")
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
 
-        return loss
+        return checkpoint_folder
+
+    @classmethod
+    def get_resumption_state(cls, checkpoint_path: str) -> Dict[str, Any]:
+        """Get resumption state from a checkpoint.
+
+        Args:
+            checkpoint_path: Path to checkpoint directory.
+
+        Returns:
+            Dictionary with resumption metadata.
+        """
+        metadata_path = os.path.join(checkpoint_path, "pe_trainer_state.json")
+        if os.path.exists(metadata_path):
+            with open(metadata_path) as f:
+                return json.load(f)
+        return {}
 
 
 def create_training_args(
@@ -86,18 +138,25 @@ def create_training_args(
     per_device_train_batch_size: int = 8,
     gradient_accumulation_steps: int = 1,
     learning_rate: float = 6e-4,
+    min_lr_ratio: float = 0.1,
     weight_decay: float = 0.01,
+    max_grad_norm: float = 1.0,
     warmup_steps: int = 1000,
     lr_scheduler_type: str = "cosine",
     logging_steps: int = 10,
     save_steps: int = 1000,
     save_total_limit: int = 3,
     bf16: bool = True,
+    tf32: bool = True,
     gradient_checkpointing: bool = True,
     report_to: str = "wandb",
+    dataloader_num_workers: int = 4,
+    seed: int = 42,
     **kwargs,
 ) -> TrainingArguments:
     """Create TrainingArguments with sensible defaults for PE experiments.
+
+    Uses hyperparameters from PoPE paper (Table 2) as defaults.
 
     Args:
         output_dir: Directory for checkpoints and logs.
@@ -105,16 +164,21 @@ def create_training_args(
         max_steps: Max training steps (-1 for epoch-based).
         per_device_train_batch_size: Batch size per device.
         gradient_accumulation_steps: Gradient accumulation steps.
-        learning_rate: Peak learning rate.
-        weight_decay: Weight decay coefficient.
-        warmup_steps: LR warmup steps.
+        learning_rate: Peak learning rate (default: 6e-4 from PoPE paper).
+        min_lr_ratio: Minimum LR as ratio of max (default: 0.1 -> 6e-5).
+        weight_decay: Weight decay coefficient (default: 0.01).
+        max_grad_norm: Max gradient norm for clipping (default: 1.0).
+        warmup_steps: LR warmup steps (default: 1000).
         lr_scheduler_type: LR scheduler type.
         logging_steps: Steps between logging.
         save_steps: Steps between checkpoints.
         save_total_limit: Max checkpoints to keep.
         bf16: Use bfloat16 training.
+        tf32: Use TF32 for matmuls.
         gradient_checkpointing: Use gradient checkpointing.
         report_to: Logging backend ("wandb", "tensorboard", etc.).
+        dataloader_num_workers: Number of dataloader workers.
+        seed: Random seed.
         **kwargs: Additional TrainingArguments.
 
     Returns:
@@ -128,14 +192,41 @@ def create_training_args(
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
         warmup_steps=warmup_steps,
         lr_scheduler_type=lr_scheduler_type,
         logging_steps=logging_steps,
         save_steps=save_steps,
         save_total_limit=save_total_limit,
         bf16=bf16,
+        tf32=tf32,
         gradient_checkpointing=gradient_checkpointing,
         report_to=report_to,
+        dataloader_num_workers=dataloader_num_workers,
+        seed=seed,
         remove_unused_columns=False,
+        # AdamW beta2 = 0.95 from PoPE paper
+        adam_beta2=0.95,
         **kwargs,
     )
+
+
+class CheckpointResumptionCallback(TrainerCallback):
+    """Callback to handle checkpoint resumption with data skipping."""
+
+    def __init__(self, checkpoint_path: Optional[str] = None):
+        """Initialize callback.
+
+        Args:
+            checkpoint_path: Path to checkpoint to resume from.
+        """
+        self.checkpoint_path = checkpoint_path
+        self.resumption_state = {}
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Load resumption state at training start."""
+        if self.checkpoint_path:
+            self.resumption_state = PETrainer.get_resumption_state(self.checkpoint_path)
+            if self.resumption_state:
+                logger.info(f"Resuming from step {self.resumption_state.get('global_step', 0)}")
+                logger.info(f"Skipping {self.resumption_state.get('samples_seen', 0)} samples")

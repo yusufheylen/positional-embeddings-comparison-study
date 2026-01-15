@@ -102,8 +102,8 @@ def main():
     model = create_model(
         model_cfg["name_or_path"],
         pe_type=pe_type,
-        torch_dtype=getattr(torch, model_cfg.get("torch_dtype", "bfloat16")),
-        attn_implementation=model_cfg.get("attn_implementation", "flash_attention_2"),
+        dtype=getattr(torch, model_cfg.get("dtype", "bfloat16")),
+        attn_implementation=model_cfg.get("attn_implementation", "auto"),
     )
 
     # Load dataset

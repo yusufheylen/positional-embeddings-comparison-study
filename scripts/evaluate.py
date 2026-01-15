@@ -46,7 +46,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint)
     model = AutoModelForCausalLM.from_pretrained(
         args.checkpoint,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map=args.device,
     )
 

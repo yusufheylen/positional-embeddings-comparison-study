@@ -19,7 +19,7 @@ drope:
   switch_step: null
   reset_optimizer: false
 
-# Note: PoPE may need eager attention
+# Note: PoPE uses custom attention - must use eager implementation
 model:
   attn_implementation: "eager"
 

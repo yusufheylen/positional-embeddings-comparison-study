@@ -12,7 +12,8 @@ pope:
   base: 10000.0  # Frequency base
   bias_init_zero: true  # Zero init for length generalization
 
-# Note: PoPE may need eager attention (no Flash Attention support yet)
+# Note: PoPE uses custom attention computation (polar coordinates)
+# Cannot use Flash Attention or SDPA - must use eager implementation
 model:
   attn_implementation: "eager"
 

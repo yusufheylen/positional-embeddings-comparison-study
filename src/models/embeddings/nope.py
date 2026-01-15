@@ -1,131 +1,255 @@
 """NoPE (No Positional Embeddings) attention implementation.
 
-NoPE removes positional information from attention, relying on causal masking
-and content-based attention only. Used as the target state in DroPE training.
+NoPE removes positional information from attention by nullifying RoPE -
+setting cos=1 and sin=0 (identity rotation). This approach works with
+any attention implementation (Flash Attention, SDPA, eager).
 
 Reference: Adapted from references/DroPE/custom_models/attention.py
 """
 
-from typing import Optional, Tuple
+import inspect
+import logging
+from typing import Any, Callable, Optional, Type
 
 import torch
 import torch.nn as nn
+
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
-    LlamaConfig,
+    apply_rotary_pos_emb as llama_apply_rotary_pos_emb,
+    eager_attention_forward as llama_eager_attention_forward,
 )
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+logger = logging.getLogger(__name__)
 
 
-class NoPEAttention(nn.Module):
-    """Attention layer without positional embeddings.
+def nope(BaseAttentionClass: Type[nn.Module]) -> Type[nn.Module]:
+    """Factory function that creates a NoPE attention class from a base attention class.
 
-    This removes the apply_rotary_pos_emb() call from standard LLaMA attention,
-    passing Q/K directly to the attention computation.
+    This works by intercepting the forward pass and nullifying RoPE by setting
+    cos=1 and sin=0 in the position_embeddings argument.
+
+    Args:
+        BaseAttentionClass: The base attention class (e.g., LlamaAttention).
+
+    Returns:
+        A new attention class with RoPE disabled.
     """
 
-    def __init__(self, config: LlamaConfig, layer_idx: int):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+    class NoPEAttention(BaseAttentionClass):
+        """Attention module with RoPE disabled (No Positional Embeddings)."""
 
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        def forward(self, *args, **kwargs):
+            # Bind arguments to get access by name
+            signature = inspect.signature(super().forward)
+            bound_args = signature.bind(*args, **kwargs)
+            bound_args.apply_defaults()
 
-    @classmethod
-    def from_source(cls, source_attention: LlamaAttention) -> "NoPEAttention":
-        """Create NoPEAttention from an existing LlamaAttention layer.
+            # Nullify RoPE by setting cos=1, sin=0 (identity rotation)
+            if "position_embeddings" in bound_args.arguments:
+                cos, sin = bound_args.arguments["position_embeddings"]
+                bound_args.arguments["position_embeddings"] = (
+                    torch.ones_like(cos),
+                    torch.zeros_like(sin),
+                )
+                logger.debug("NoPE: Nullified position_embeddings")
+            else:
+                raise NotImplementedError(
+                    "NoPE only supports models that pass position_embeddings to attention. "
+                    "This model architecture may not be supported."
+                )
 
-        Args:
-            source_attention: Source attention layer to copy weights from.
+            return super().forward(*bound_args.args, **bound_args.kwargs)
 
-        Returns:
-            NoPEAttention with copied weights.
-        """
-        nope_attn = cls(source_attention.config, source_attention.layer_idx)
+        @classmethod
+        def from_source(cls, source_module: nn.Module, config: Any = None) -> "NoPEAttention":
+            """Create NoPEAttention from an existing attention module."""
+            config = source_module.config
+            layer_idx = source_module.layer_idx
+            device = source_module.o_proj.weight.device
 
-        # Copy projection weights
-        nope_attn.q_proj.weight.data.copy_(source_attention.q_proj.weight.data)
-        nope_attn.k_proj.weight.data.copy_(source_attention.k_proj.weight.data)
-        nope_attn.v_proj.weight.data.copy_(source_attention.v_proj.weight.data)
-        nope_attn.o_proj.weight.data.copy_(source_attention.o_proj.weight.data)
+            new_module = cls(config=config, layer_idx=layer_idx).to(device)
+            new_module.load_state_dict(source_module.state_dict())
 
-        return nope_attn
+            # Handle custom softmax scale if present
+            if hasattr(config, "softmax_scale"):
+                new_module.scaling = config.softmax_scale
 
-    def forward(
+            return new_module
+
+    NoPEAttention.__name__ = f"NoPE{BaseAttentionClass.__name__}"
+    return NoPEAttention
+
+
+def qk_norm_nope(
+    BaseAttentionClass: Type[nn.Module],
+    forward_fn: Callable,
+) -> Type[nn.Module]:
+    """Factory for NoPE attention with QK normalization.
+
+    Args:
+        BaseAttentionClass: The base attention class.
+        forward_fn: Custom forward function with normalization.
+
+    Returns:
+        Attention class with QK normalization and NoPE.
+    """
+
+    class QKNormNoPEAttention(BaseAttentionClass):
+        """NoPE attention with query/key normalization."""
+
+        def __init__(self, *args, **kwargs):
+            # Get config before super().__init__
+            signature = inspect.signature(super().__init__)
+            bound_args = signature.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+            config = bound_args.arguments["config"]
+
+            super().__init__(*args, **kwargs)
+
+            # Add normalization layers
+            self.q_norm = nn.RMSNorm(
+                config.num_attention_heads * config.head_dim,
+                config.rms_norm_eps,
+            )
+            self.k_norm = nn.RMSNorm(
+                config.num_key_value_heads * config.head_dim,
+                config.rms_norm_eps,
+            )
+
+            # Bind custom forward
+            self.forward = forward_fn.__get__(self, self.__class__)
+
+        @classmethod
+        def from_source(cls, source_module: nn.Module, config: Any = None) -> "QKNormNoPEAttention":
+            """Create from existing attention module."""
+            config = source_module.config
+            device = next(source_module.parameters()).device
+            new_module = cls(config, source_module.layer_idx).to(device)
+            new_module.load_state_dict(source_module.state_dict(), strict=False)
+            return new_module
+
+    QKNormNoPEAttention.__name__ = f"QKNormNoPE{BaseAttentionClass.__name__}"
+    return QKNormNoPEAttention
+
+
+def llama_qk_norm_nope_forward(
+    self,
+    hidden_states: torch.Tensor,
+    position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    attention_mask: Optional[torch.Tensor],
+    past_key_value: Optional[Any] = None,
+    cache_position: Optional[torch.LongTensor] = None,
+    norm_type: str = "qk",
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass for LLaMA with QK normalization and NoPE.
+
+    Args:
+        norm_type: "qk" for both, "q" for query only, "k" for key only.
+    """
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, self.head_dim)
+
+    # Project with optional normalization
+    query_states = self.q_norm(self.q_proj(hidden_states)) if "q" in norm_type else self.q_proj(hidden_states)
+    key_states = self.k_norm(self.k_proj(hidden_states)) if "k" in norm_type else self.k_proj(hidden_states)
+
+    query_states = query_states.view(hidden_shape).transpose(1, 2)
+    key_states = key_states.view(hidden_shape).transpose(1, 2)
+    value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+    # Nullify positional embeddings (NoPE)
+    original_cos, original_sin = position_embeddings
+    cos = torch.ones_like(original_cos)
+    sin = torch.zeros_like(original_sin)
+    query_states, key_states = llama_apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+    # Handle KV cache
+    if past_key_value is not None:
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+
+    # Select attention implementation
+    attention_fn: Callable = llama_eager_attention_forward
+    if self.config._attn_implementation != "eager":
+        attention_fn = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+    attn_output, attn_weights = attention_fn(
         self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        dropout=0.0 if not self.training else self.attention_dropout,
+        scaling=self.scaling,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass without positional embeddings.
+    )
 
-        Key difference from standard attention: No rotary position embedding applied.
-        """
-        batch_size, seq_len, _ = hidden_states.size()
-
-        # Project to Q, K, V
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        # Reshape for multi-head attention
-        query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
-        # Handle KV cache
-        if past_key_value is not None:
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-        past_key_value = (key_states, value_states) if use_cache else None
-
-        # Repeat KV for GQA
-        if self.num_key_value_groups > 1:
-            key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-            value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-
-        # Compute attention (NO positional encoding applied)
-        attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) / (self.head_dim**0.5)
-
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
-
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
-        attn_output = self.o_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
+    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+    attn_output = self.o_proj(attn_output)
+    return attn_output, attn_weights
 
 
-def convert_to_nope(model: nn.Module) -> nn.Module:
-    """Convert a model's attention layers to NoPE (no positional embeddings).
+def llama_q_norm_nope_forward(self, *args, **kwargs):
+    """Forward with Q-only normalization."""
+    return llama_qk_norm_nope_forward(self, *args, norm_type="q", **kwargs)
+
+
+def llama_k_norm_nope_forward(self, *args, **kwargs):
+    """Forward with K-only normalization."""
+    return llama_qk_norm_nope_forward(self, *args, norm_type="k", **kwargs)
+
+
+# Pre-built attention classes
+NoPELlamaAttention = nope(LlamaAttention)
+QKNormNoPELlamaAttention = qk_norm_nope(LlamaAttention, llama_qk_norm_nope_forward)
+QNormNoPELlamaAttention = qk_norm_nope(LlamaAttention, llama_q_norm_nope_forward)
+KNormNoPELlamaAttention = qk_norm_nope(LlamaAttention, llama_k_norm_nope_forward)
+
+# Attention variants map
+NOPE_ATTENTION_VARIANTS = {
+    LlamaAttention: {
+        "nope": NoPELlamaAttention,
+        "qk_norm_nope": QKNormNoPELlamaAttention,
+        "q_norm_nope": QNormNoPELlamaAttention,
+        "k_norm_nope": KNormNoPELlamaAttention,
+    },
+}
+
+
+def convert_to_nope(model: nn.Module, attention_type: str = "nope") -> nn.Module:
+    """Convert a model's attention layers to NoPE.
 
     Args:
         model: Model with standard attention layers.
+        attention_type: Type of NoPE attention ("nope", "qk_norm_nope", "q_norm_nope", "k_norm_nope").
 
     Returns:
         Model with NoPE attention layers.
     """
-    for layer in model.model.layers:
-        if hasattr(layer, "self_attn") and isinstance(layer.self_attn, LlamaAttention):
-            layer.self_attn = NoPEAttention.from_source(layer.self_attn)
+    # Get the model core (usually model.model for CausalLM)
+    model_core = getattr(model, model.base_model_prefix, model)
+
+    for i, layer in enumerate(model_core.layers):
+        if hasattr(layer, "self_attn"):
+            original_attn = layer.self_attn
+            base_class = type(original_attn)
+
+            # Find the appropriate NoPE variant
+            if base_class in NOPE_ATTENTION_VARIANTS:
+                variants = NOPE_ATTENTION_VARIANTS[base_class]
+                if attention_type in variants:
+                    AttentionClass = variants[attention_type]
+                    new_attn = AttentionClass.from_source(original_attn, model.config)
+                    layer.self_attn = new_attn
+                    logger.info(f"Layer {i}: Converted to {new_attn.__class__.__name__}")
+                else:
+                    logger.warning(f"Unknown attention_type '{attention_type}' for {base_class.__name__}")
+            else:
+                logger.warning(f"No NoPE variant for {base_class.__name__}")
 
     return model

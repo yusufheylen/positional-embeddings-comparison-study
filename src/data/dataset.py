@@ -1,14 +1,21 @@
 """Dataset loading and collation utilities.
 
+Includes block diagonal attention collators for efficient sequence packing
+during pretraining.
+
 Reference: Adapted from references/DroPE/custom_data/pretraining_data.py
 """
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from itertools import chain
+from typing import Any, Dict, List, Optional
 
 import torch
-from datasets import Dataset, load_dataset
-from transformers import PreTrainedTokenizer
+from datasets import Dataset, IterableDataset, load_dataset
+from transformers import PreTrainedTokenizer, default_data_collator
+
+logger = logging.getLogger(__name__)
 
 
 def load_dataset_for_training(
@@ -38,145 +45,302 @@ def load_dataset_for_training(
     return dataset
 
 
-def tokenize_dataset(
+def tokenize_and_chunk_dataset(
     dataset: Dataset,
     tokenizer: PreTrainedTokenizer,
     text_column: str = "text",
     max_length: int = 2048,
+    add_eos: bool = True,
+    streaming: bool = True,
     num_proc: int = 4,
 ) -> Dataset:
-    """Tokenize a dataset.
+    """Tokenize dataset and chunk into fixed-length sequences.
 
     Args:
-        dataset: Dataset to tokenize.
+        dataset: Dataset to process.
         tokenizer: Tokenizer to use.
         text_column: Column containing text.
         max_length: Maximum sequence length.
-        num_proc: Number of processes for tokenization.
+        add_eos: Whether to add EOS between documents.
+        streaming: Whether dataset is streaming.
+        num_proc: Number of processes for non-streaming.
 
     Returns:
-        Tokenized dataset.
+        Tokenized and chunked dataset.
     """
+    eos_id = tokenizer.eos_token_id
 
     def tokenize_fn(examples):
         return tokenizer(
             examples[text_column],
-            truncation=True,
-            max_length=max_length,
-            padding=False,
+            add_special_tokens=False,
             return_attention_mask=True,
         )
 
-    tokenized = dataset.map(
-        tokenize_fn,
-        batched=True,
-        num_proc=num_proc,
-        remove_columns=dataset.column_names,
-    )
+    def group_texts(examples):
+        """Concatenate and chunk into fixed-length sequences."""
+        ids_cat, attn_cat = [], []
 
-    return tokenized
+        for ids, attn in zip(examples["input_ids"], examples["attention_mask"]):
+            ids_cat.extend(ids)
+            attn_cat.extend(attn)
+            if add_eos and eos_id is not None:
+                ids_cat.append(eos_id)
+                attn_cat.append(1)
+
+        # Chunk into max_length blocks
+        total = (len(ids_cat) // max_length) * max_length
+        input_blocks = [ids_cat[i : i + max_length] for i in range(0, total, max_length)]
+        attn_blocks = [attn_cat[i : i + max_length] for i in range(0, total, max_length)]
+
+        return {
+            "input_ids": input_blocks,
+            "attention_mask": attn_blocks,
+            "labels": [b[:] for b in input_blocks],
+        }
+
+    # Get columns to remove
+    if streaming:
+        # For streaming, get column names differently
+        cols = list(dataset.features.keys()) if hasattr(dataset, "features") else [text_column]
+    else:
+        cols = dataset.column_names
+
+    # Tokenize
+    if streaming:
+        tok_ds = dataset.map(tokenize_fn, batched=True, remove_columns=cols)
+    else:
+        tok_ds = dataset.map(
+            tokenize_fn,
+            batched=True,
+            num_proc=num_proc,
+            remove_columns=cols,
+        )
+
+    # Group into chunks
+    if streaming:
+        chunked_ds = tok_ds.map(group_texts, batched=True)
+    else:
+        chunked_ds = tok_ds.map(group_texts, batched=True, num_proc=num_proc)
+
+    return chunked_ds
 
 
-@dataclass
-class BlockDiagonalCollator:
-    """Data collator that creates block diagonal attention masks.
+class BlockDiagFromEOSCollator:
+    """Collator that creates block diagonal attention masks from EOS tokens.
 
-    This allows packing multiple sequences into a single batch while
-    preventing cross-sequence attention, improving training efficiency.
+    This enables efficient sequence packing: multiple documents are concatenated
+    into a single sequence, with attention masked to prevent cross-document attention.
+    EOS tokens mark document boundaries.
 
     Reference: references/DroPE/custom_data/pretraining_data.py
     """
 
-    tokenizer: PreTrainedTokenizer
-    max_length: int = 2048
-    pad_to_multiple_of: Optional[int] = None
+    def __init__(self, tokenizer: PreTrainedTokenizer):
+        """Initialize collator.
+
+        Args:
+            tokenizer: Tokenizer to get EOS token ID.
+        """
+        self.eos_id = tokenizer.eos_token_id
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        """Collate features into a batch with block diagonal attention.
+        """Create batch with block diagonal attention mask.
 
         Args:
             features: List of tokenized examples.
 
         Returns:
-            Batch dictionary with input_ids, attention_mask, labels.
+            Batch dict with input_ids, attention_mask (4D), and labels.
         """
-        # Extract input_ids
-        input_ids_list = [f["input_ids"] for f in features]
+        batch = default_data_collator(features)
+        ids = batch["input_ids"]
+        pad_mask = batch.get("attention_mask")
 
-        # Pack sequences
-        packed_ids = []
-        packed_labels = []
-        attention_mask = []
-        current_length = 0
+        if pad_mask is None:
+            pad_mask = torch.ones_like(ids)
 
-        for ids in input_ids_list:
-            seq_len = len(ids)
+        b, seq_len = ids.shape
+        device = ids.device
 
-            if current_length + seq_len > self.max_length:
-                # Start new sequence
-                if packed_ids:
-                    # Pad current batch
-                    pad_len = self.max_length - current_length
-                    packed_ids.extend([self.tokenizer.pad_token_id] * pad_len)
-                    packed_labels.extend([-100] * pad_len)
-                    attention_mask.extend([0] * pad_len)
+        # Find EOS positions to determine segment boundaries
+        is_eos = ids.eq(self.eos_id)
 
-                packed_ids = list(ids)
-                packed_labels = list(ids)
-                attention_mask = [1] * seq_len
-                current_length = seq_len
-            else:
-                # Append to current sequence
-                packed_ids.extend(ids)
-                packed_labels.extend(ids)
-                attention_mask.extend([1] * seq_len)
-                current_length += seq_len
+        # Segment starts: position 0 or right after EOS
+        seg_start = torch.zeros_like(ids)
+        seg_start[:, 0] = 1
+        seg_start[:, 1:] = is_eos[:, :-1].int()
 
-        # Pad final sequence
-        if current_length < self.max_length:
-            pad_len = self.max_length - current_length
-            packed_ids.extend([self.tokenizer.pad_token_id] * pad_len)
-            packed_labels.extend([-100] * pad_len)
-            attention_mask.extend([0] * pad_len)
+        # Assign segment IDs
+        seg_id = torch.cumsum(seg_start, dim=1) - 1
 
-        # Convert to tensors
-        batch = {
-            "input_ids": torch.tensor([packed_ids], dtype=torch.long),
-            "attention_mask": torch.tensor([attention_mask], dtype=torch.long),
-            "labels": torch.tensor([packed_labels], dtype=torch.long),
-        }
+        # Build attention mask: attend only within same segment
+        same_seg = seg_id.unsqueeze(2) == seg_id.unsqueeze(1)  # (b, seq, seq)
+
+        # Causal mask
+        positions = torch.arange(seq_len, device=device)
+        causal = positions[None, :, None] >= positions[None, None, :]  # (1, seq, seq)
+
+        # Combine: same segment AND causal AND not padding
+        keep = same_seg & causal
+        keep = keep & pad_mask[:, None, :].bool() & pad_mask[:, :, None].bool()
+
+        # Convert to attention mask format (0 for attend, -inf for ignore)
+        attn_mask = torch.zeros(b, 1, seq_len, seq_len, device=device, dtype=torch.float32)
+        attn_mask.masked_fill_(~keep.unsqueeze(1), torch.finfo(attn_mask.dtype).min)
+        batch["attention_mask"] = attn_mask
+
+        # Prepare labels: mask padding and first token after EOS
+        labels = batch.get("labels")
+        if labels is None:
+            labels = ids.clone()
+        else:
+            labels = labels.clone()
+
+        # Mask padding
+        labels[pad_mask.eq(0)] = -100
+
+        # Mask first token of each segment (can't predict from previous doc)
+        ignore_first = torch.zeros_like(is_eos, dtype=torch.bool)
+        ignore_first[:, 1:] = is_eos[:, :-1]
+        labels[ignore_first] = -100
+
+        batch["labels"] = labels
 
         return batch
 
 
-def create_block_diagonal_mask(
-    sequence_lengths: List[int],
-    total_length: int,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """Create a block diagonal attention mask.
+class BlockDiagFA2Collator:
+    """Block diagonal collator optimized for Flash Attention 2.
+
+    Creates the cu_seqlens format required by Flash Attention for variable
+    length sequences with block diagonal masking.
+
+    Reference: references/DroPE/custom_data/pretraining_data.py
+    """
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        ignore_idx: int = -100,
+        return_seq_idx: bool = False,
+    ):
+        """Initialize collator.
+
+        Args:
+            tokenizer: Tokenizer to get EOS token ID.
+            ignore_idx: Index for ignored labels.
+            return_seq_idx: Whether to return sequence indices.
+        """
+        self.eos_id = tokenizer.eos_token_id
+        self.ignore_idx = ignore_idx
+        self.return_seq_idx = return_seq_idx
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        """Create batch with Flash Attention 2 format.
+
+        Args:
+            features: List of tokenized examples.
+
+        Returns:
+            Batch dict with input_ids, labels, position_ids, cu_seq_lens, max_length.
+        """
+        flat_ids, flat_labels, pos_ids = [], [], []
+        seq_idx = [] if self.return_seq_idx else None
+        cu = [0]  # Cumulative sequence lengths
+        max_len = 0
+
+        for si, ex in enumerate(features):
+            ids = ex["input_ids"]
+            lbls = ex.get("labels", ids)
+            n = len(ids)
+
+            if n == 0:
+                continue
+
+            # Split on EOS tokens
+            start = 0
+            split_on_eos = self.eos_id is not None
+
+            for i, tok in enumerate(ids):
+                if split_on_eos and tok == self.eos_id:
+                    seg_ids = ids[start : i + 1]
+                    seg_labels = lbls[start : i + 1]
+
+                    if seg_ids:
+                        # First token of segment gets ignored label
+                        seg_labels = [self.ignore_idx] + list(seg_labels[1:])
+
+                        flat_ids.extend(seg_ids)
+                        flat_labels.extend(seg_labels)
+                        pos_ids.extend(range(len(seg_ids)))
+
+                        if self.return_seq_idx:
+                            seq_idx.extend([si] * len(seg_ids))
+
+                        cu.append(cu[-1] + len(seg_ids))
+                        max_len = max(max_len, len(seg_ids))
+
+                    start = i + 1
+
+            # Handle remaining tokens after last EOS
+            if start < n:
+                seg_ids = ids[start:n]
+                if seg_ids:
+                    seg_labels = lbls[start:n]
+                    seg_labels = [self.ignore_idx] + list(seg_labels[1:])
+
+                    flat_ids.extend(seg_ids)
+                    flat_labels.extend(seg_labels)
+                    pos_ids.extend(range(len(seg_ids)))
+
+                    if self.return_seq_idx:
+                        seq_idx.extend([si] * len(seg_ids))
+
+                    cu.append(cu[-1] + len(seg_ids))
+                    max_len = max(max_len, len(seg_ids))
+
+        assert cu[-1] == len(flat_ids) == len(flat_labels) == len(pos_ids)
+
+        batch = {
+            "input_ids": torch.tensor([flat_ids], dtype=torch.int64),
+            "labels": torch.tensor([flat_labels], dtype=torch.int64),
+            "position_ids": torch.tensor([pos_ids], dtype=torch.int64),
+            "cu_seq_lens_q": torch.tensor(cu, dtype=torch.int32),
+            "cu_seq_lens_k": torch.tensor(cu, dtype=torch.int32),
+            "max_length_q": int(max_len),
+            "max_length_k": int(max_len),
+        }
+
+        if self.return_seq_idx:
+            batch["seq_idx"] = torch.tensor([seq_idx], dtype=torch.int32)
+
+        return batch
+
+
+def get_data_collator(
+    tokenizer: PreTrainedTokenizer,
+    attn_implementation: str = "sdpa",
+    mask_past_sequences: bool = True,
+) -> Any:
+    """Get appropriate data collator based on attention implementation.
 
     Args:
-        sequence_lengths: Length of each sequence in the packed batch.
-        total_length: Total padded length.
-        dtype: Data type for the mask.
+        tokenizer: Tokenizer for EOS token.
+        attn_implementation: Attention implementation being used.
+        mask_past_sequences: Whether to use block diagonal masking.
 
     Returns:
-        Block diagonal attention mask of shape (1, 1, total_length, total_length).
+        Data collator instance.
     """
-    mask = torch.zeros(total_length, total_length, dtype=dtype)
+    if not mask_past_sequences:
+        return default_data_collator
 
-    start = 0
-    for length in sequence_lengths:
-        end = start + length
-        # Create causal mask for this block
-        block_mask = torch.triu(torch.ones(length, length, dtype=dtype), diagonal=1)
-        mask[start:end, start:end] = -block_mask * float("inf")
-        start = end
+    if "flash" in attn_implementation:
+        return BlockDiagFA2Collator(tokenizer)
+    else:
+        return BlockDiagFromEOSCollator(tokenizer)
 
-    # Mask padding positions
-    if start < total_length:
-        mask[start:, :] = float("-inf")
-        mask[:, start:] = float("-inf")
 
-    return mask.unsqueeze(0).unsqueeze(0)
+# Legacy alias for backwards compatibility
+BlockDiagonalCollator = BlockDiagFromEOSCollator

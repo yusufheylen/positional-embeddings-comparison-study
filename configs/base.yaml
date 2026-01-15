@@ -4,8 +4,12 @@
 # Model settings
 model:
   name_or_path: "HuggingFaceTB/SmolLM-360M"
-  torch_dtype: bfloat16
-  attn_implementation: "flash_attention_2"  # or "sdpa", "eager"
+  dtype: bfloat16
+  # Attention implementation: "auto" will select best available
+  # - NVIDIA GPU: flash_attention_2 (fastest)
+  # - Apple Silicon / CPU: sdpa (PyTorch native)
+  # - Fallback: eager (slowest, always works)
+  attn_implementation: "auto"
 
 # Data settings
 data:

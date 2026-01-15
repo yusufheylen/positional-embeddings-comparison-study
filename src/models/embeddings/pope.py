@@ -3,210 +3,256 @@
 PoPE represents attention in polar coordinates, disentangling magnitude (what)
 from phase (where) for improved length generalization.
 
+Key differences from RoPE:
+- Uses d frequencies (not d/2 pairs like RoPE)
+- Applies softplus to get non-negative magnitudes
+- Output is Cartesian form: [t * cos(θ), t * sin(θ)] (doubles dimension)
+- Learnable per-head phase bias for keys
+
 Reference:
 - Paper: https://arxiv.org/abs/2509.10534
-- Implementation: references/x-transformers/x_transformers/x_transformers.py:782-812
-- Formulas: references/PoPE/arXiv-2509.10534v2/sections/method.tex
+- Implementation: references/x-transformers/x_transformers/x_transformers.py:782-824
 """
 
+import inspect
+import logging
 import math
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple, Type
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig
+
+from transformers.models.llama.modeling_llama import LlamaAttention
+
+logger = logging.getLogger(__name__)
 
 
 class PolarEmbedding(nn.Module):
     """Polar positional embedding module.
 
     Generates frequency-based positional information with learnable per-head bias.
+    Reference: x-transformers/x_transformers.py:782-812
     """
 
-    def __init__(self, dim: int, num_heads: int, base: float = 10000.0, bias_init_zero: bool = True):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        base: float = 10000.0,
+        bias_init_zero: bool = True,
+    ):
         """Initialize PolarEmbedding.
 
         Args:
-            dim: Head dimension (full dim, not dim/2 like RoPE).
+            dim: Head dimension (uses full dim, not dim/2 like RoPE).
             num_heads: Number of attention heads.
             base: Base for frequency computation.
-            bias_init_zero: If True, init bias to 0 for length generalization.
+            bias_init_zero: If True, initialize bias to 0 for length generalization.
         """
         super().__init__()
 
-        # Frequencies: theta_c = base^((c-1)/d) for c in [0, dim)
+        # Frequencies: inv_freq[c] = 1 / (base^(c/dim)) for c in [0, dim)
         # Note: PoPE uses d frequencies, not d/2 like RoPE
         inv_freq = 1.0 / (base ** (torch.arange(0, dim).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
 
-        # Learnable per-head bias: delta_c in [-2pi, 0]
+        # Learnable per-head bias: delta_c in [-2π, 0]
+        # Initialize to 0 for better length generalization
         self.learned_bias = nn.Parameter(torch.zeros(num_heads, 1, dim))
+
         if not bias_init_zero:
             self.learned_bias.data.uniform_(-2.0 * math.pi, 0.0)
 
-    def forward(self, seq_len: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
+    def forward(self, positions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute positional frequencies and bias.
 
         Args:
-            seq_len: Sequence length.
-            device: Target device.
+            positions: Position indices of shape (batch, seq_len) or (seq_len,).
 
         Returns:
-            Tuple of (freqs, bias) where:
-            - freqs: (seq_len, dim) position-dependent frequencies
-            - bias: (num_heads, 1, dim) learnable bias clamped to [-2pi, 0]
+            Tuple of (freqs, bias):
+            - freqs: (batch, seq_len, dim) positional frequencies
+            - bias: (num_heads, 1, dim) learnable bias clamped to [-2π, 0]
         """
-        positions = torch.arange(seq_len, device=device).float()
-        freqs = torch.outer(positions, self.inv_freq)  # (seq_len, dim)
+        if positions.ndim == 1:
+            positions = positions.unsqueeze(0)
+
+        # freqs[b, i, c] = positions[b, i] * inv_freq[c]
+        freqs = torch.einsum("b i, j -> b i j", positions.float(), self.inv_freq)
+
+        # Clamp bias to valid range
         bias = self.learned_bias.clamp(-2.0 * math.pi, 0.0)
+
         return freqs, bias
 
 
-class PoPEAttention(nn.Module):
-    """Attention layer with Polar Positional Embeddings.
+@torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
+def apply_polar_pos_emb(t: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+    """Apply polar positional embeddings to a tensor.
 
-    Key differences from RoPE:
-    1. Uses d frequencies (not d/2 pairs)
-    2. Disentangled magnitude (softplus) and phase (position)
-    3. Learnable per-head phase bias
+    Converts to Cartesian form: [μ * cos(θ), μ * sin(θ)]
+    where μ = softplus(t) ensures non-negative magnitude.
+
+    Args:
+        t: Input tensor of shape (..., dim).
+        freqs: Frequency tensor of shape (..., dim).
+
+    Returns:
+        Tensor of shape (..., 2*dim) in Cartesian form.
+    """
+    seq_len = t.shape[-2]
+    freqs = freqs[:, -seq_len:]  # Handle offset
+
+    # Softplus for non-negative magnitude
+    t = F.softplus(t)
+
+    # Convert to Cartesian form (doubles dimension)
+    out = torch.cat((t * freqs.cos(), t * freqs.sin()), dim=-1)
+
+    return out
+
+
+def pope_attention(BaseAttentionClass: Type[nn.Module]) -> Type[nn.Module]:
+    """Factory function to create PoPE attention from a base attention class.
+
+    Args:
+        BaseAttentionClass: Base attention class (e.g., LlamaAttention).
+
+    Returns:
+        Attention class with PoPE positional embeddings.
     """
 
-    def __init__(self, config: LlamaConfig, layer_idx: int):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+    class PoPEAttention(BaseAttentionClass):
+        """Attention with Polar Positional Embeddings (PoPE)."""
 
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        def __init__(self, *args, **kwargs):
+            # Get config before super().__init__
+            signature = inspect.signature(super().__init__)
+            bound_args = signature.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+            config = bound_args.arguments["config"]
 
-        # PoPE-specific: polar embedding per head
-        self.polar_emb = PolarEmbedding(self.head_dim, self.num_heads, bias_init_zero=True)
+            super().__init__(*args, **kwargs)
 
-    @classmethod
-    def from_source(cls, source_attention: LlamaAttention) -> "PoPEAttention":
-        """Create PoPEAttention from an existing LlamaAttention layer."""
-        pope_attn = cls(source_attention.config, source_attention.layer_idx)
+            # Add PoPE embedding - bias is per KV head for GQA compatibility
+            self.polar_emb = PolarEmbedding(
+                dim=self.head_dim,
+                num_heads=config.num_key_value_heads,  # Use KV heads for bias
+                base=getattr(config, "rope_theta", 10000.0),
+                bias_init_zero=True,
+            )
 
-        pope_attn.q_proj.weight.data.copy_(source_attention.q_proj.weight.data)
-        pope_attn.k_proj.weight.data.copy_(source_attention.k_proj.weight.data)
-        pope_attn.v_proj.weight.data.copy_(source_attention.v_proj.weight.data)
-        pope_attn.o_proj.weight.data.copy_(source_attention.o_proj.weight.data)
+            # Adjust scaling for doubled dimension
+            # Standard: sqrt(head_dim), PoPE: sqrt(2 * head_dim)
+            self.pope_scaling = 1.0 / math.sqrt(2 * self.head_dim)
 
-        return pope_attn
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            past_key_value: Optional[Any] = None,
+            cache_position: Optional[torch.LongTensor] = None,
+            **kwargs,
+        ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+            """Forward pass with PoPE attention.
 
-    def _apply_polar_pos_emb(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        freqs: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply polar positional embeddings to Q and K.
+            Note: This implementation uses eager attention for simplicity.
+            PoPE's dimension doubling is not directly compatible with Flash Attention.
+            """
+            bsz, seq_len, _ = hidden_states.size()
+            device = hidden_states.device
 
-        Converts to Cartesian form for efficient computation:
-        x_q = mu_q * cos(t * theta)
-        y_q = mu_q * sin(t * theta)
-        x_k = mu_k * cos(s * theta + delta)
-        y_k = mu_k * sin(s * theta + delta)
+            # Get head counts from config (transformers 5.x compatibility)
+            num_heads = self.config.num_attention_heads
+            num_kv_heads = self.config.num_key_value_heads
+            num_kv_groups = num_heads // num_kv_heads
 
-        Args:
-            q: Query tensor (batch, heads, seq, dim).
-            k: Key tensor (batch, heads, seq, dim).
-            freqs: Position frequencies (seq, dim).
-            bias: Learnable bias (heads, 1, dim).
+            # Project Q, K, V
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
-        Returns:
-            Tuple of (q_polar, k_polar) in Cartesian form.
-        """
-        # Magnitude via softplus (ensures non-negative)
-        mu_q = F.softplus(q)  # (batch, heads, seq, dim)
-        mu_k = F.softplus(k)
+            # Reshape for multi-head attention
+            query_states = query_states.view(bsz, seq_len, num_heads, self.head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, seq_len, num_kv_heads, self.head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, seq_len, num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Expand freqs for broadcasting: (1, 1, seq, dim)
-        freqs = freqs.unsqueeze(0).unsqueeze(0)
+            # Get position indices
+            if cache_position is not None:
+                positions = cache_position
+            else:
+                positions = torch.arange(seq_len, device=device)
 
-        # Query: no bias
-        q_real = mu_q * freqs.cos()
-        q_imag = mu_q * freqs.sin()
+            # Compute PoPE frequencies and bias
+            freqs, bias = self.polar_emb(positions)
 
-        # Key: with learnable bias
-        k_freqs = freqs + bias.unsqueeze(0)  # Add head-specific bias
-        k_real = mu_k * k_freqs.cos()
-        k_imag = mu_k * k_freqs.sin()
+            # Expand freqs for batch and heads: (batch, 1, seq, dim) -> broadcast to (batch, heads, seq, dim)
+            freqs = freqs.unsqueeze(1)
 
-        # Stack real/imag as last dimension for attention computation
-        q_polar = torch.stack([q_real, q_imag], dim=-1)  # (batch, heads, seq, dim, 2)
-        k_polar = torch.stack([k_real, k_imag], dim=-1)
+            # Apply PoPE to Q (no bias) and K (with bias)
+            # After this, Q and K have shape (batch, heads, seq, 2*head_dim)
+            query_states = apply_polar_pos_emb(query_states, freqs)
+            # For K, add per-head bias: bias has shape (heads, 1, dim)
+            key_freqs = freqs + bias.unsqueeze(0)  # (batch, heads, seq, dim)
+            key_states = apply_polar_pos_emb(key_states, key_freqs)
 
-        return q_polar, k_polar
+            # Repeat KV for grouped query attention if needed
+            if num_kv_groups > 1:
+                key_states = key_states.repeat_interleave(num_kv_groups, dim=1)
+                value_states = value_states.repeat_interleave(num_kv_groups, dim=1)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
-        **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass with PoPE attention."""
-        batch_size, seq_len, _ = hidden_states.size()
+            # Compute attention scores with adjusted scaling
+            # Q and K now have shape (batch, heads, seq, 2*head_dim)
+            attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) * self.pope_scaling
 
-        # Project to Q, K, V
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+            # Apply attention mask
+            if attention_mask is not None:
+                causal_mask = attention_mask[:, :, :, :key_states.shape[-2]]
+                attn_weights = attn_weights + causal_mask
 
-        # Reshape for multi-head attention
-        query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            # Softmax
+            attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(value_states.dtype)
+            attn_weights = F.dropout(attn_weights, p=getattr(self, 'attention_dropout', 0.0) if self.training else 0.0)
 
-        # Get polar frequencies and bias
-        freqs, bias = self.polar_emb(seq_len, hidden_states.device)
+            # Apply attention to values
+            # Note: V has original dimension, output also has original dimension
+            attn_output = torch.matmul(attn_weights, value_states)
 
-        # Apply polar positional embeddings
-        q_polar, k_polar = self._apply_polar_pos_emb(query_states, key_states, freqs, bias)
+            # Reshape and project output
+            attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+            attn_output = self.o_proj(attn_output)
 
-        # Compute attention scores: Re[q^H * k] = sum(q_real*k_real + q_imag*k_imag)
-        # Shape: (batch, heads, seq_q, seq_k)
-        attn_weights = (q_polar * k_polar.transpose(2, 3).unsqueeze(2)).sum(dim=(-1, -2))
-        attn_weights = attn_weights / (self.head_dim**0.5)
+            return attn_output, attn_weights
 
-        # Handle KV cache (simplified - full implementation needs polar cache)
-        if past_key_value is not None:
-            # Note: Full implementation should cache polar-transformed K/V
-            pass
+        @classmethod
+        def from_source(cls, source_module: nn.Module, config: Any = None) -> "PoPEAttention":
+            """Create PoPEAttention from an existing attention module."""
+            config = source_module.config
+            layer_idx = source_module.layer_idx
+            device = source_module.o_proj.weight.device
 
-        past_key_value = (key_states, value_states) if use_cache else None
+            new_module = cls(config=config, layer_idx=layer_idx).to(device)
+            # Load weights (strict=False because we have extra parameters)
+            new_module.load_state_dict(source_module.state_dict(), strict=False)
 
-        # Repeat KV for GQA
-        if self.num_key_value_groups > 1:
-            value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
+            return new_module
 
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
+    PoPEAttention.__name__ = f"PoPE{BaseAttentionClass.__name__}"
+    return PoPEAttention
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
 
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
-        attn_output = self.o_proj(attn_output)
+# Pre-built PoPE attention class
+PoPELlamaAttention = pope_attention(LlamaAttention)
 
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
+# Attention variants map
+POPE_ATTENTION_VARIANTS = {
+    LlamaAttention: {
+        "pope": PoPELlamaAttention,
+    },
+}
 
 
 def convert_to_pope(model: nn.Module) -> nn.Module:
@@ -218,8 +264,20 @@ def convert_to_pope(model: nn.Module) -> nn.Module:
     Returns:
         Model with PoPE attention layers.
     """
-    for layer in model.model.layers:
-        if hasattr(layer, "self_attn") and isinstance(layer.self_attn, LlamaAttention):
-            layer.self_attn = PoPEAttention.from_source(layer.self_attn)
+    # Get the model core
+    model_core = getattr(model, model.base_model_prefix, model)
+
+    for i, layer in enumerate(model_core.layers):
+        if hasattr(layer, "self_attn"):
+            original_attn = layer.self_attn
+            base_class = type(original_attn)
+
+            if base_class in POPE_ATTENTION_VARIANTS:
+                AttentionClass = POPE_ATTENTION_VARIANTS[base_class]["pope"]
+                new_attn = AttentionClass.from_source(original_attn, model.config)
+                layer.self_attn = new_attn
+                logger.info(f"Layer {i}: Converted to {new_attn.__class__.__name__}")
+            else:
+                logger.warning(f"No PoPE variant for {base_class.__name__}")
 
     return model
