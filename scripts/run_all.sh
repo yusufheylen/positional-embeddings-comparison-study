@@ -2,9 +2,10 @@
 # Run experiments for PE comparison study
 #
 # Usage:
-#   ./scripts/run_all.sh rope           # Run single experiment
-#   ./scripts/run_all.sh all            # Run all experiments
-#   ./scripts/run_all.sh all --seeds    # Run all with multiple seeds
+#   ./scripts/run_all.sh rope                    # Run single experiment
+#   ./scripts/run_all.sh rope --accel zero1      # With accelerate config
+#   ./scripts/run_all.sh all                     # Run all experiments
+#   ./scripts/run_all.sh all --seeds             # Run all with multiple seeds
 
 set -e
 
@@ -15,6 +16,7 @@ CONFIGS_DIR="$PROJECT_DIR/configs"
 # Default settings
 SEEDS=(42 43 44)
 RUN_SEEDS=false
+ACCEL_CONFIG="single_gpu"
 
 # Parse arguments
 EXPERIMENT="$1"
@@ -25,6 +27,10 @@ while [[ $# -gt 0 ]]; do
         --seeds)
             RUN_SEEDS=true
             shift
+            ;;
+        --accel)
+            ACCEL_CONFIG="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -39,12 +45,10 @@ run_experiment() {
     local seed=$2
 
     echo "========================================"
-    echo "Running: $config (seed=$seed)"
+    echo "Running: $config (seed=$seed, accel=$ACCEL_CONFIG)"
     echo "========================================"
 
-    python "$SCRIPT_DIR/train.py" \
-        --config "$CONFIGS_DIR/$config.yaml" \
-        --seed "$seed"
+    "$SCRIPT_DIR/launch.sh" "$CONFIGS_DIR/$config.yaml" "$ACCEL_CONFIG" --seed "$seed"
 }
 
 # Function to run experiment with optional multiple seeds
@@ -95,7 +99,7 @@ case "$EXPERIMENT" in
         run_with_seeds "drope_from_pope"
         ;;
     *)
-        echo "Usage: $0 {nope|rope|rope_yarn|pope|drope_from_rope|drope_from_pope|baselines|all} [--seeds]"
+        echo "Usage: $0 {nope|rope|rope_yarn|pope|drope_from_rope|drope_from_pope|baselines|all} [options]"
         echo ""
         echo "Experiments:"
         echo "  nope            - No Positional Embeddings"
@@ -108,7 +112,13 @@ case "$EXPERIMENT" in
         echo "  all             - Run all experiments"
         echo ""
         echo "Options:"
-        echo "  --seeds         - Run with multiple seeds (42, 43, 44)"
+        echo "  --seeds              - Run with multiple seeds (42, 43, 44)"
+        echo "  --accel <config>     - Accelerate config (single_gpu, zero1, zero3, zero3_offload)"
+        echo ""
+        echo "Examples:"
+        echo "  $0 rope                          # Single GPU training"
+        echo "  $0 rope --accel zero1            # Multi-GPU with ZeRO-1"
+        echo "  $0 all --seeds --accel zero3     # All experiments, multi-seed, ZeRO-3"
         exit 1
         ;;
 esac

@@ -151,12 +151,12 @@ For a detailed writeup of this work, see: [Link to blog post]
 If you find this work useful, please cite:
 
 ```bibtex
-@misc{yourname2025pecomparison,
-  author = {Your Name},
+@misc{yourname2026pecomparison,
+  author = {Yusuf Heylen},
   title = {Comparing Positional Embedding Strategies for Context Length Generalization},
-  year = {2025},
+  year = {2026},
   publisher = {GitHub},
-  url = {https://github.com/YOUR_USERNAME/positional-embeddings-comparison}
+  url = {https://github.com/yusufheylen/positional-embeddings-comparison}
 }
 ```
 

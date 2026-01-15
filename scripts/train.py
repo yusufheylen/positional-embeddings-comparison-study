@@ -18,7 +18,7 @@ from transformers import AutoTokenizer, set_seed
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data import BlockDiagonalCollator, load_dataset_for_training
+from src.data import get_data_collator, load_dataset_for_training, tokenize_and_chunk_dataset
 from src.models import create_model, get_model_config
 from src.training import DroPECallback, PETrainer, create_training_args
 
@@ -114,10 +114,21 @@ def main():
         streaming=data_cfg.get("streaming", True),
     )
 
-    # Create collator
-    collator = BlockDiagonalCollator(
-        tokenizer=tokenizer,
+    # Tokenize and chunk dataset
+    print(f"Tokenizing dataset with max_length={data_cfg.get('max_length', 2048)}")
+    dataset = tokenize_and_chunk_dataset(
+        dataset,
+        tokenizer,
+        text_column=data_cfg.get("text_column", "text"),
         max_length=data_cfg.get("max_length", 2048),
+        streaming=data_cfg.get("streaming", True),
+    )
+
+    # Create collator based on attention implementation
+    collator = get_data_collator(
+        tokenizer,
+        attn_implementation=model_cfg.get("attn_implementation", "auto"),
+        mask_past_sequences=True,
     )
 
     # Create training arguments
@@ -171,6 +182,12 @@ def main():
     print("Saving final model...")
     trainer.save_model()
     tokenizer.save_pretrained(train_cfg["output_dir"])
+
+    # Save training config for evaluation auto-detection
+    config_save_path = Path(train_cfg["output_dir"]) / "training_config.yaml"
+    with open(config_save_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+    print(f"Saved training config to {config_save_path}")
 
     print("Training complete!")
 
