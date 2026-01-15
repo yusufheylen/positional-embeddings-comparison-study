@@ -101,8 +101,13 @@ def tokenize_and_chunk_dataset(
 
     # Get columns to remove
     if streaming:
-        # For streaming, get column names differently
-        cols = list(dataset.features.keys()) if hasattr(dataset, "features") else [text_column]
+        # For streaming, features can be None - check both hasattr and not None
+        if hasattr(dataset, "features") and dataset.features is not None:
+            cols = list(dataset.features.keys())
+        elif hasattr(dataset, "column_names") and dataset.column_names is not None:
+            cols = dataset.column_names
+        else:
+            cols = [text_column]
     else:
         cols = dataset.column_names
 
