@@ -41,6 +41,9 @@ training:
   bf16: true
   tf32: true
 
+  # Gradient checkpointing - disabled due to SDPA compatibility issues
+  gradient_checkpointing: false
+
   # Checkpointing
   save_steps: 5000
   save_total_limit: 3

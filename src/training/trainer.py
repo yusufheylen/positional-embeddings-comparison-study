@@ -51,6 +51,7 @@ class PETrainer(Trainer):
         self.log_grad_norm = log_grad_norm
         self.skip_samples = skip_samples
         self._current_loss = None
+        self._current_grad_norm = None
         self._samples_seen = 0
 
     def get_train_dataloader(self):
@@ -77,19 +78,26 @@ class PETrainer(Trainer):
 
         return loss
 
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Training step with grad_norm capture after backward pass."""
+        # Call parent training_step (does forward + backward)
+        loss = super().training_step(model, inputs, num_items_in_batch)
+
+        # Capture grad_norm after backward, before optimizer.step() zeros them
+        if self.log_grad_norm:
+            total_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    total_norm += p.grad.data.norm(2).item() ** 2
+            self._current_grad_norm = total_norm ** 0.5
+
+        return loss
+
     def log(self, logs: Dict[str, Any], start_time: Optional[float] = None) -> None:
         """Enhanced logging with additional metrics."""
-        # Add gradient norm if requested
-        if self.log_grad_norm and self.model is not None:
-            try:
-                total_norm = 0.0
-                for p in self.model.parameters():
-                    if p.grad is not None:
-                        total_norm += p.grad.data.norm(2).item() ** 2
-                total_norm = total_norm**0.5
-                logs["grad_norm"] = total_norm
-            except Exception:
-                pass
+        # Add gradient norm captured during training_step (before zero_grad)
+        if self.log_grad_norm and self._current_grad_norm is not None:
+            logs["grad_norm"] = self._current_grad_norm
 
         # Add current learning rate
         if self.optimizer is not None:
