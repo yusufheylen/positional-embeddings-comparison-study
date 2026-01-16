@@ -1,0 +1,23 @@
+# Run 2: RoPE + YaRN from scratch
+# RoPE with Yet another RoPE extensioN for length extrapolation
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "yarn"
+
+# YaRN specific settings
+yarn:
+  factor: 2.0  # Context extension factor
+  attention_factor: null  # Auto-computed
+  beta_fast: 32.0
+  beta_slow: 1.0
+
+# Experiment naming
+wandb:
+  tags: ["yarn", "rope", "from-scratch", "run-2"]
+  name: "run2-yarn-scratch"
+
+training:
+  output_dir: "./outputs/run2_yarn"

@@ -1,0 +1,16 @@
+# Run 1: RoPE from scratch
+# Rotary Position Embeddings (HuggingFace native)
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "rope"
+
+# Experiment naming
+wandb:
+  tags: ["rope", "from-scratch", "run-1"]
+  name: "run1-rope-scratch"
+
+training:
+  output_dir: "./outputs/run1_rope"

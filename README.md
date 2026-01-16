@@ -1,33 +1,58 @@
-# positional-embeddings-comparison-study
+# Positional Embeddings Comparison Study
+
 Comparing positional embedding strategies (RoPE, PoPE, DroPE, NoPE, YaRN) for context length generalization in transformers.
 
 ## Overview
 
-This project empirically compares how different positional embedding (PE) methods affect a transformer's ability to generalize to longer context lengths than seen during training. We train small language models with various PE strategies and evaluate their performance across different sequence lengths.
+This project empirically compares how different positional embedding (PE) methods affect a transformer's ability to generalize to longer context lengths than seen during training. We train language models **from scratch** with various PE strategies and evaluate their performance across different sequence lengths.
 
-**Key question:** How do recent approaches like PoPE (polar positional embeddings) and DroPE (dropping positional embeddings mid-training) compare for length generalization?
+**Key questions:**
+1. Which PE method enables best length generalization?
+2. Does the "scaffold hypothesis" hold - can PE be dropped after initial training?
+3. How do DroPE variants (dropping PE mid-training) compare across different initial PE methods?
 
 ## Methods Compared
 
-| Method | Description | Reference |
-|--------|-------------|-----------|
-| **NoPE** | No positional embeddings | Baseline |
-| **RoPE** | Rotary Position Embeddings | [Su et al., 2021](https://arxiv.org/abs/2104.09864) |
-| **RoPE + YaRN** | RoPE with Yet another RoPE extensioN | [Peng et al., 2023](https://arxiv.org/abs/2309.00071) |
-| **PoPE** | Polar Positional Embeddings | [Paper, 2025](https://arxiv.org/abs/2509.10534) |
-| **RoPE → DroPE** | RoPE then ablate and continue training | [Sakana AI, 2025](https://arxiv.org/abs/2512.12167) |
-| **PoPE → DroPE** | PoPE then ablate and continue training | Novel combination |
+| Run | Method | Description | Reference |
+|-----|--------|-------------|-----------|
+| 0 | **NoPE** | No positional embeddings | Baseline |
+| 1 | **RoPE** | Rotary Position Embeddings | [Su et al., 2021](https://arxiv.org/abs/2104.09864) |
+| 2 | **RoPE + YaRN** | RoPE with Yet another RoPE extensioN | [Peng et al., 2023](https://arxiv.org/abs/2309.00071) |
+| 3 | **PoPE** | Polar Positional Embeddings | [arXiv:2509.10534](https://arxiv.org/abs/2509.10534) |
+| 4a | **RoPE → NoPE** | RoPE then drop PE (DroPE) | [Sakana AI, 2025](https://arxiv.org/abs/2512.12167) |
+| 4b | **YaRN → NoPE** | YaRN then drop PE | Novel combination |
+| 4c | **PoPE → NoPE** | PoPE then drop PE | Novel combination |
+
+## Experimental Setup
+
+### Training Approach: From-Scratch
+
+All models are trained **from random initialization** (not continued pretraining) to ensure:
+- Fair comparison: all methods see identical data from identical starting point
+- PoPE compatibility: PoPE cannot be retrofitted to RoPE models
+- Clear demonstration of PE effects during training
+
+### Model & Data
+- **Architecture:** LLaMA-style decoder-only transformer (~360M-494M parameters)
+- **Dataset:** FineWeb (HuggingFaceFW/fineweb)
+- **Training context:** 1024 tokens
+- **Evaluation contexts:** 1024, 2048, 4096, 8192, 16384 tokens
+
+### Training Parameters (based on DroPE paper)
+- **Total steps (S):** 16,000
+- **DroPE switch point (T):** 14,000 (87.5% of training)
+- **Batch size:** 64
+- **Learning rate:** 3e-4
+- **Warmup:** 3% of steps (~480 steps)
+
+### Evaluation
+- Perplexity at varying context lengths
+- Needle-in-haystack retrieval accuracy
+- Passkey retrieval
 
 ## Results
 
-*Coming soon*
-
-<!-- 
-TODO: Add key findings here
-- Perplexity vs context length plot
-- Summary table of best performing methods
-- Key takeaways
--->
+*Coming soon after experiments complete*
 
 ## Quick Start
 
@@ -36,122 +61,101 @@ TODO: Add key findings here
 git clone https://github.com/YOUR_USERNAME/positional-embeddings-comparison.git
 cd positional-embeddings-comparison
 
-# Install dependencies
+# Setup environment
+conda create -n pe-study python=3.11 -y
+conda activate pe-study
 pip install -r requirements.txt
+./scripts/install.sh
 
-# Run a training experiment
-python scripts/train.py --config configs/rope.yaml
+# Login for datasets
+huggingface-cli login
+wandb login
+
+# Run a training experiment (after config update)
+python scripts/train.py --config configs/rope_scratch.yaml
 
 # Evaluate a checkpoint
-python scripts/evaluate.py --checkpoint outputs/rope/checkpoint-final --max-length 16384
+python scripts/evaluate.py --checkpoint outputs/rope --eval all --context-lengths 1024 2048 4096 8192 16384
 ```
 
 ## Project Structure
 
 ```
 positional-embeddings-comparison/
-├── configs/                 # Training configurations for each PE variant
-│   ├── nope.yaml
-│   ├── rope.yaml
-│   ├── rope_yarn.yaml
-│   ├── pope.yaml
-│   └── drope_rope.yaml
+├── configs/                 # Training configurations
+│   ├── base.yaml            # Shared defaults
+│   ├── rope_scratch.yaml    # RoPE from scratch
+│   ├── nope_scratch.yaml    # NoPE from scratch
+│   ├── pope_scratch.yaml    # PoPE from scratch
+│   ├── yarn_scratch.yaml    # YaRN from scratch
+│   ├── drope_rope.yaml      # RoPE → NoPE at step 14k
+│   ├── drope_yarn.yaml      # YaRN → NoPE at step 14k
+│   └── drope_pope.yaml      # PoPE → NoPE at step 14k
 ├── src/
 │   ├── models/
-│   │   ├── __init__.py
-│   │   ├── transformer.py   # Base transformer implementation
+│   │   ├── base.py          # Model factory
 │   │   └── embeddings/      # PE implementations
-│   │       ├── __init__.py
 │   │       ├── rope.py
 │   │       ├── pope.py
 │   │       ├── yarn.py
 │   │       └── nope.py
 │   ├── training/
-│   │   ├── __init__.py
-│   │   ├── trainer.py       # Training loop
-│   │   └── drope.py         # DroPE ablation logic
+│   │   ├── trainer.py       # Enhanced trainer with grad_norm logging
+│   │   └── drope_callback.py # Mid-training PE switch
 │   ├── evaluation/
-│   │   ├── __init__.py
 │   │   ├── perplexity.py
-│   │   └── needle.py        # Needle-in-haystack evaluation
+│   │   ├── needle.py        # Needle-in-haystack
+│   │   └── passkey.py       # Passkey retrieval
 │   └── data/
-│       ├── __init__.py
-│       └── dataset.py
+│       └── dataset.py       # Data loading and collators
 ├── scripts/
 │   ├── train.py
 │   ├── evaluate.py
-│   └── run_all.sh           # Launch full experiment suite
-├── notebooks/
-│   └── analysis.ipynb       # Results analysis and plotting
-├── results/                 # Experiment outputs (not tracked in git)
-├── requirements.txt
-└── README.md
+│   └── run_all.sh
+├── tests/
+│   ├── test_pe_implementations.py
+│   └── sanity_check_training.py
+└── notebooks/
+    └── analysis.ipynb       # Results analysis
 ```
-
-## Experimental Setup
-
-### Model
-- **Architecture:** GPT-style decoder-only transformer
-- **Size:** ~160M parameters (based on Pythia-160M configuration)
-- **Training context:** 2048 tokens
-- **Evaluation contexts:** 2048, 4096, 8192, 16384 tokens
-
-### Training
-- **Dataset:** SlimPajama (subset)
-- **Steps:** 100,000
-- **Batch size:** TBD
-- **Learning rate:** TBD
-- **DroPE ablation point:** Step 70,000 (70% of training)
-
-### Evaluation
-- Perplexity at varying context lengths
-- Needle-in-haystack retrieval accuracy
-- Passkey retrieval
 
 ## Reproducing Results
 
 ### Prerequisites
 - Python 3.10+
 - PyTorch 2.0+
-- GPU with at least 24GB VRAM (A100 recommended) or adjust batch size
+- GPU with at least 40GB VRAM (A100 recommended)
+- ~35-50 GPU hours for all 7 experiments
 
 ### Full reproduction
 
 ```bash
-# Run all experiments (requires GPU cluster or patience)
-bash scripts/run_all.sh
+# Run all 7 experiments sequentially
+./scripts/run_all_experiments.sh
 
-# Or run individual experiments
-python scripts/train.py --config configs/rope.yaml --seed 42
-python scripts/train.py --config configs/rope.yaml --seed 43
-python scripts/train.py --config configs/rope.yaml --seed 44
+# Or run individually
+python scripts/train.py --config configs/rope_scratch.yaml --seed 42
+python scripts/train.py --config configs/nope_scratch.yaml --seed 42
+python scripts/train.py --config configs/yarn_scratch.yaml --seed 42
+python scripts/train.py --config configs/pope_scratch.yaml --seed 42
+python scripts/train.py --config configs/drope_rope.yaml --seed 42
+python scripts/train.py --config configs/drope_yarn.yaml --seed 42
+python scripts/train.py --config configs/drope_pope.yaml --seed 42
+
+# Evaluate all checkpoints
+./scripts/run_evals.sh
 ```
-
-### Using pre-trained checkpoints
-
-*Coming soon: Links to trained checkpoints*
 
 ## Key Findings
 
 *Coming soon*
-
-<!--
-TODO: Fill in after experiments
-1. Finding 1
-2. Finding 2
-3. Finding 3
--->
-
-## Blog Post
-
-For a detailed writeup of this work, see: [Link to blog post]
 
 ## Citation
 
 If you find this work useful, please cite:
 
 ```bibtex
-@misc{yourname2026pecomparison,
+@misc{heylen2026pecomparison,
   author = {Yusuf Heylen},
   title = {Comparing Positional Embedding Strategies for Context Length Generalization},
   year = {2026},
@@ -162,14 +166,13 @@ If you find this work useful, please cite:
 
 ## Acknowledgments & References
 
-This project builds on the following work:
+This project builds on:
 
 - **DroPE:** [Sakana AI, 2025](https://arxiv.org/abs/2512.12167) — Dropping positional embeddings mid-training
-  - Reference implementation: https://github.com/SakanaAI/DroPE
-- **PoPE:** [Authors, 2025](https://arxiv.org/abs/2509.10534) — Polar positional embeddings
+  - Reference: https://github.com/SakanaAI/DroPE
+- **PoPE:** [arXiv:2509.10534](https://arxiv.org/abs/2509.10534) — Polar positional embeddings
 - **RoPE:** [Su et al., 2021](https://arxiv.org/abs/2104.09864) — Rotary position embeddings
 - **YaRN:** [Peng et al., 2023](https://arxiv.org/abs/2309.00071) — Context extension for RoPE
-- **Pythia:** [Biderman et al., 2023](https://arxiv.org/abs/2304.01373) — Model architecture reference
 
 ## License
 

@@ -1,0 +1,16 @@
+# Run 0: NoPE from scratch
+# No positional embeddings - pure attention
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "nope"
+
+# Experiment naming
+wandb:
+  tags: ["nope", "from-scratch", "run-0"]
+  name: "run0-nope-scratch"
+
+training:
+  output_dir: "./outputs/run0_nope"

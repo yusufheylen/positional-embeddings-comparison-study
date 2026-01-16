@@ -97,20 +97,24 @@ def main():
 
     # Create model
     pe_type = config.get("pe_type", "rope")
-    print(f"Creating model with PE type: {pe_type}")
+    from_scratch = model_cfg.get("from_scratch", False)
+    print(f"Creating model with PE type: {pe_type}, from_scratch: {from_scratch}")
 
     model = create_model(
         model_cfg["name_or_path"],
         pe_type=pe_type,
         dtype=getattr(torch, model_cfg.get("dtype", "bfloat16")),
         attn_implementation=model_cfg.get("attn_implementation", "auto"),
+        from_scratch=from_scratch,
     )
 
     # Load dataset
     data_cfg = config["data"]
-    print(f"Loading dataset: {data_cfg['dataset_name']}")
+    dataset_config = data_cfg.get("dataset_config")
+    print(f"Loading dataset: {data_cfg['dataset_name']}" + (f" ({dataset_config})" if dataset_config else ""))
     dataset = load_dataset_for_training(
         dataset_name=data_cfg["dataset_name"],
+        dataset_config=dataset_config,
         streaming=data_cfg.get("streaming", True),
     )
 
@@ -155,6 +159,7 @@ def main():
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         gradient_checkpointing_kwargs=train_cfg.get("gradient_checkpointing_kwargs"),
         report_to=train_cfg.get("report_to", "wandb"),
+        dataloader_num_workers=train_cfg.get("dataloader_num_workers", 0),
         seed=config["seed"],
     )
 

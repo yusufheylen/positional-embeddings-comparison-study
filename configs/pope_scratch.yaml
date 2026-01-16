@@ -1,0 +1,25 @@
+# Run 3: PoPE from scratch
+# Polar Positional Embeddings
+
+defaults:
+  - base
+
+# PE configuration
+pe_type: "pope"
+
+# PoPE specific settings
+pope:
+  base: 10000.0  # Frequency base
+  bias_init_zero: true  # Zero init for length generalization
+
+# PoPE requires eager attention (dimension doubling incompatible with FA2/SDPA)
+model:
+  attn_implementation: "eager"
+
+# Experiment naming
+wandb:
+  tags: ["pope", "polar", "from-scratch", "run-3"]
+  name: "run3-pope-scratch"
+
+training:
+  output_dir: "./outputs/run3_pope"

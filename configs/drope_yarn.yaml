@@ -1,0 +1,31 @@
+# Run 4b: YaRN → NoPE (DroPE)
+# YaRN for T steps, then drop to NoPE for remaining S-T steps
+# T = 14000 (87.5% of S=16000)
+
+defaults:
+  - base
+
+# PE configuration - starts with YaRN
+pe_type: "yarn"
+
+# YaRN specific settings
+yarn:
+  factor: 2.0
+  attention_factor: null
+  beta_fast: 32.0
+  beta_slow: 1.0
+
+# DroPE settings
+drope:
+  enabled: true
+  switch_fraction: 0.875  # 14k/16k = 87.5%
+  switch_step: null
+  reset_optimizer: false
+
+# Experiment naming
+wandb:
+  tags: ["drope", "yarn-to-nope", "from-scratch", "run-4b"]
+  name: "run4b-drope-yarn"
+
+training:
+  output_dir: "./outputs/run4b_drope_yarn"

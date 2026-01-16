@@ -73,6 +73,7 @@ def create_model(
     attention_type: str = "nope",
     config: Optional[AutoConfig] = None,
     attn_implementation: str = "auto",
+    from_scratch: bool = False,
     **kwargs,
 ) -> PreTrainedModel:
     """Create a model with the specified positional embedding strategy.
@@ -83,6 +84,7 @@ def create_model(
         attention_type: For NoPE, the variant ("nope", "qk_norm_nope", "q_norm_nope", "k_norm_nope").
         config: Optional pre-configured model config.
         attn_implementation: Attention implementation ("auto", "flash_attention_2", "sdpa", "eager").
+        from_scratch: If True, initialize model with random weights instead of pretrained.
         **kwargs: Additional model loading arguments.
 
     Returns:
@@ -101,13 +103,39 @@ def create_model(
             attn_implementation = get_best_attn_implementation()
         logger.info(f"Using attention implementation: {attn_implementation}")
 
-    # Load base model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        config=config,
-        attn_implementation=attn_implementation,
-        **kwargs,
-    )
+    # Set attention implementation in config
+    config._attn_implementation = attn_implementation
+
+    if from_scratch:
+        # Initialize model with random weights (from config only)
+        logger.info(f"Initializing model from scratch with config from {model_name_or_path}")
+
+        # Get the model class for this config
+        model_class = AutoModelForCausalLM._model_mapping.get(type(config), None)
+        if model_class is None:
+            # Fallback: try to infer from config
+            from transformers import LlamaForCausalLM
+            model_class = LlamaForCausalLM
+            logger.warning(f"Could not find model class for config type {type(config)}, using LlamaForCausalLM")
+
+        # Initialize with random weights
+        model = model_class(config)
+
+        # Convert to specified dtype if provided
+        dtype = kwargs.get("dtype")
+        if dtype is not None:
+            model = model.to(dtype)
+            logger.info(f"Converted model to {dtype}")
+
+        logger.info(f"Initialized {model_class.__name__} with {model.num_parameters():,} parameters (random weights)")
+    else:
+        # Load pretrained weights
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            config=config,
+            attn_implementation=attn_implementation,
+            **kwargs,
+        )
 
     # Apply PE-specific modifications
     if pe_type == "nope":

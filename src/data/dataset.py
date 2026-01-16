@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 def load_dataset_for_training(
-    dataset_name: str = "cerebras/SlimPajama-627B",
+    dataset_name: str = "HuggingFaceFW/fineweb",
+    dataset_config: Optional[str] = None,
     split: str = "train",
     streaming: bool = True,
     num_samples: Optional[int] = None,
@@ -29,6 +30,7 @@ def load_dataset_for_training(
 
     Args:
         dataset_name: HuggingFace dataset identifier.
+        dataset_config: Dataset configuration/subset name (e.g., "sample-10BT" for FineWeb).
         split: Dataset split to load.
         streaming: Whether to use streaming mode.
         num_samples: Optional limit on number of samples.
@@ -37,7 +39,8 @@ def load_dataset_for_training(
     Returns:
         HuggingFace Dataset.
     """
-    dataset = load_dataset(dataset_name, split=split, streaming=streaming, **kwargs)
+    logger.info(f"Loading dataset: {dataset_name}" + (f" ({dataset_config})" if dataset_config else ""))
+    dataset = load_dataset(dataset_name, name=dataset_config, split=split, streaming=streaming, **kwargs)
 
     if num_samples is not None and not streaming:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
