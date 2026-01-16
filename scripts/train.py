@@ -152,7 +152,8 @@ def main():
         save_steps=train_cfg.get("save_steps", 5000),
         save_total_limit=train_cfg.get("save_total_limit", 3),
         bf16=train_cfg.get("bf16", True),
-        gradient_checkpointing=train_cfg.get("gradient_checkpointing", False),
+        gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
+        gradient_checkpointing_kwargs=train_cfg.get("gradient_checkpointing_kwargs"),
         report_to=train_cfg.get("report_to", "wandb"),
         seed=config["seed"],
     )

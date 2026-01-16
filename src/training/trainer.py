@@ -157,6 +157,7 @@ def create_training_args(
     bf16: bool = True,
     tf32: bool = True,
     gradient_checkpointing: bool = True,
+    gradient_checkpointing_kwargs: dict = None,
     report_to: str = "wandb",
     dataloader_num_workers: int = 4,
     seed: int = 42,
@@ -184,6 +185,7 @@ def create_training_args(
         bf16: Use bfloat16 training.
         tf32: Use TF32 for matmuls.
         gradient_checkpointing: Use gradient checkpointing.
+        gradient_checkpointing_kwargs: Kwargs for gradient checkpointing (e.g., {"use_reentrant": False}).
         report_to: Logging backend ("wandb", "tensorboard", etc.).
         dataloader_num_workers: Number of dataloader workers.
         seed: Random seed.
@@ -209,6 +211,7 @@ def create_training_args(
         bf16=bf16,
         tf32=tf32,
         gradient_checkpointing=gradient_checkpointing,
+        gradient_checkpointing_kwargs=gradient_checkpointing_kwargs or {"use_reentrant": False},
         report_to=report_to,
         dataloader_num_workers=dataloader_num_workers,
         seed=seed,

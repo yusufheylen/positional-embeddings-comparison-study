@@ -41,8 +41,10 @@ training:
   bf16: true
   tf32: true
 
-  # Gradient checkpointing - disabled due to SDPA compatibility issues
-  gradient_checkpointing: false
+  # Gradient checkpointing - use non-reentrant mode to fix gradient computation
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
 
   # Checkpointing
   save_steps: 5000
