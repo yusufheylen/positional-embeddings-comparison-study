@@ -1,10 +1,10 @@
 #!/bin/bash
-# Run experiments for PE comparison study
+# Run experiments for PE comparison study (from-scratch training)
 #
 # Usage:
 #   ./scripts/run_all.sh rope                    # Run single experiment
 #   ./scripts/run_all.sh rope --accel zero1      # With accelerate config
-#   ./scripts/run_all.sh all                     # Run all experiments
+#   ./scripts/run_all.sh all                     # Run all 7 experiments
 #   ./scripts/run_all.sh all --seeds             # Run all with multiple seeds
 
 set -e
@@ -64,52 +64,75 @@ run_with_seeds() {
     fi
 }
 
-# Main logic
+# Main logic - Updated for from-scratch training configs
 case "$EXPERIMENT" in
-    nope)
-        run_with_seeds "nope"
+    nope|run0)
+        run_with_seeds "nope_scratch"
         ;;
-    rope)
-        run_with_seeds "rope"
+    rope|run1)
+        run_with_seeds "rope_scratch"
         ;;
-    rope_yarn|yarn)
-        run_with_seeds "rope_yarn"
+    yarn|run2)
+        run_with_seeds "yarn_scratch"
         ;;
-    pope)
-        run_with_seeds "pope"
+    pope|run3)
+        run_with_seeds "pope_scratch"
         ;;
-    drope_from_rope|drope_rope)
-        run_with_seeds "drope_from_rope"
+    drope_rope|run4a)
+        run_with_seeds "drope_rope"
         ;;
-    drope_from_pope|drope_pope)
-        run_with_seeds "drope_from_pope"
+    drope_yarn|run4b)
+        run_with_seeds "drope_yarn"
+        ;;
+    drope_pope|run4c)
+        run_with_seeds "drope_pope"
         ;;
     baselines)
-        echo "Running baseline experiments..."
-        run_with_seeds "nope"
-        run_with_seeds "rope"
+        echo "Running baseline experiments (runs 0-3)..."
+        run_with_seeds "nope_scratch"
+        run_with_seeds "rope_scratch"
+        run_with_seeds "yarn_scratch"
+        run_with_seeds "pope_scratch"
+        ;;
+    drope)
+        echo "Running DroPE experiments (runs 4a-4c)..."
+        run_with_seeds "drope_rope"
+        run_with_seeds "drope_yarn"
+        run_with_seeds "drope_pope"
         ;;
     all)
-        echo "Running all experiments..."
-        run_with_seeds "nope"
-        run_with_seeds "rope"
-        run_with_seeds "rope_yarn"
-        run_with_seeds "pope"
-        run_with_seeds "drope_from_rope"
-        run_with_seeds "drope_from_pope"
+        echo "Running all 7 experiments..."
+        echo "Run 0: NoPE"
+        run_with_seeds "nope_scratch"
+        echo "Run 1: RoPE"
+        run_with_seeds "rope_scratch"
+        echo "Run 2: YaRN"
+        run_with_seeds "yarn_scratch"
+        echo "Run 3: PoPE"
+        run_with_seeds "pope_scratch"
+        echo "Run 4a: DroPE (RoPE → NoPE)"
+        run_with_seeds "drope_rope"
+        echo "Run 4b: DroPE (YaRN → NoPE)"
+        run_with_seeds "drope_yarn"
+        echo "Run 4c: DroPE (PoPE → NoPE)"
+        run_with_seeds "drope_pope"
         ;;
     *)
-        echo "Usage: $0 {nope|rope|rope_yarn|pope|drope_from_rope|drope_from_pope|baselines|all} [options]"
+        echo "Usage: $0 {nope|rope|yarn|pope|drope_rope|drope_yarn|drope_pope|baselines|drope|all} [options]"
         echo ""
-        echo "Experiments:"
-        echo "  nope            - No Positional Embeddings"
-        echo "  rope            - Rotary Position Embeddings"
-        echo "  rope_yarn       - RoPE with YaRN scaling"
-        echo "  pope            - Polar Position Embeddings"
-        echo "  drope_from_rope - DroPE (RoPE -> NoPE at 70%)"
-        echo "  drope_from_pope - DroPE (PoPE -> NoPE at 70%)"
-        echo "  baselines       - Run nope and rope baselines"
-        echo "  all             - Run all experiments"
+        echo "Experiments (from-scratch training, 16k steps):"
+        echo "  nope (run0)       - No Positional Embeddings"
+        echo "  rope (run1)       - Rotary Position Embeddings"
+        echo "  yarn (run2)       - RoPE with YaRN scaling"
+        echo "  pope (run3)       - Polar Position Embeddings"
+        echo "  drope_rope (run4a) - DroPE (RoPE → NoPE at 87.5%)"
+        echo "  drope_yarn (run4b) - DroPE (YaRN → NoPE at 87.5%)"
+        echo "  drope_pope (run4c) - DroPE (PoPE → NoPE at 87.5%)"
+        echo ""
+        echo "Groups:"
+        echo "  baselines         - Run baseline experiments (runs 0-3)"
+        echo "  drope             - Run DroPE experiments (runs 4a-4c)"
+        echo "  all               - Run all 7 experiments"
         echo ""
         echo "Options:"
         echo "  --seeds              - Run with multiple seeds (42, 43, 44)"
