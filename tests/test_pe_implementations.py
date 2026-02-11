@@ -10,12 +10,12 @@ Tests:
 
 import math
 import pytest
-import torch
-import torch.nn as nn
 from unittest.mock import MagicMock, patch
 
 # Skip tests if dependencies not available
+torch = pytest.importorskip("torch")
 pytest.importorskip("transformers")
+import torch.nn as nn
 
 
 # ==============================================================================

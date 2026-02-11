@@ -1,0 +1,61 @@
+# Base configuration for scaffold experiments
+# Scaffold = train with PE, then drop PE and continue training
+#
+# These experiments test the "scaffold hypothesis": positional embeddings
+# help early training but can be removed later without harming performance.
+
+# Model settings (same architecture as baseline runs)
+model:
+  name_or_path: "HuggingFaceTB/SmolLM-360M"
+  dtype: bfloat16
+  from_scratch: false  # We load from checkpoint, not random init
+  attn_implementation: "sdpa"
+
+# Data settings (same as baseline)
+data:
+  dataset_name: "HuggingFaceFW/fineweb"
+  dataset_config: "sample-10BT"
+  text_column: "text"
+  streaming: true
+  max_length: 1024
+
+# Training settings - these are overridden per experiment
+training:
+  # Base settings shared across scaffold experiments
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 8  # effective batch size = 64
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler_type: "cosine"
+
+  # Optimizer
+  optim: "adamw_torch"
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+
+  # Precision
+  bf16: true
+  tf32: true
+
+  # Gradient checkpointing
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+
+  # Checkpointing - save more frequently for shorter runs
+  save_total_limit: 3
+
+  # Logging
+  logging_steps: 10
+  report_to: "wandb"
+
+  # Dataloader
+  dataloader_num_workers: 0
+
+# W&B settings
+wandb:
+  project: "pe-comparison-study"
+  entity: null
+
+# Seed for reproducibility
+seed: 42

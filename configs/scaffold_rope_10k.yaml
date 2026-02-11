@@ -1,0 +1,31 @@
+# Scaffold experiment: RoPE -> NoPE (switch at 10k)
+# Load RoPE checkpoint at step 10k, convert to NoPE, train 6k more steps
+# Total effective training: 16k steps (10k with RoPE + 6k with NoPE)
+
+defaults:
+  - scaffold_base
+
+# Scaffold configuration
+scaffold:
+  enabled: true
+  checkpoint_path: "../initial-run-outputs/outputs/run1_rope/checkpoint-10000"
+  source_pe: "rope"
+  switch_step: 10000  # For documentation/logging
+
+# Training settings for remaining 6k steps
+training:
+  output_dir: "./outputs/scaffold_rope_10k"
+  max_steps: 6000  # Remaining steps to reach 16k total
+
+  # LR scaled for continued training (1/3 of original peak)
+  learning_rate: 1.0e-4
+  min_learning_rate: 1.0e-5
+  warmup_steps: 180  # 3% of 6k
+
+  # Save checkpoints
+  save_steps: 2000
+
+# Experiment naming
+wandb:
+  tags: ["scaffold", "rope-to-nope", "switch-10k"]
+  name: "scaffold-rope-10k"

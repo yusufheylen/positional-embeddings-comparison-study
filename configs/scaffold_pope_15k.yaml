@@ -1,0 +1,31 @@
+# Scaffold experiment: PoPE -> NoPE (switch at 15k)
+# Load PoPE checkpoint at step 15k, convert to NoPE, train 1k more steps
+# Total effective training: 16k steps (15k with PoPE + 1k with NoPE)
+
+defaults:
+  - scaffold_base
+
+# Scaffold configuration
+scaffold:
+  enabled: true
+  checkpoint_path: "../initial-run-outputs/outputs/run3_pope/checkpoint-15000"
+  source_pe: "pope"
+  switch_step: 15000
+
+# Training settings for remaining 1k steps
+training:
+  output_dir: "./outputs/scaffold_pope_15k"
+  max_steps: 1000
+
+  # LR scaled for short continued training
+  learning_rate: 5.0e-5
+  min_learning_rate: 5.0e-6
+  warmup_steps: 30
+
+  # Save checkpoints
+  save_steps: 500
+
+# Experiment naming
+wandb:
+  tags: ["scaffold", "pope-to-nope", "switch-15k"]
+  name: "scaffold-pope-15k"

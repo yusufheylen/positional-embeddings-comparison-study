@@ -13,15 +13,27 @@ This project empirically compares how different positional embedding (PE) method
 
 ## Methods Compared
 
+### Baseline Runs (from scratch, 16k steps)
+
 | Run | Method | Description | Reference |
 |-----|--------|-------------|-----------|
 | 0 | **NoPE** | No positional embeddings | Baseline |
 | 1 | **RoPE** | Rotary Position Embeddings | [Su et al., 2021](https://arxiv.org/abs/2104.09864) |
 | 2 | **RoPE + YaRN** | RoPE with Yet another RoPE extensioN | [Peng et al., 2023](https://arxiv.org/abs/2309.00071) |
 | 3 | **PoPE** | Polar Positional Embeddings | [arXiv:2509.10534](https://arxiv.org/abs/2509.10534) |
-| 4a | **RoPE → NoPE** | RoPE then drop PE (DroPE) | [Sakana AI, 2025](https://arxiv.org/abs/2512.12167) |
-| 4b | **YaRN → NoPE** | YaRN then drop PE | Novel combination |
-| 4c | **PoPE → NoPE** | PoPE then drop PE | Novel combination |
+
+### Scaffold Runs (load PE checkpoint, convert to NoPE, continue training)
+
+| Run | Method | Source | Remaining Steps |
+|-----|--------|--------|-----------------|
+| scaffold_rope_10k | **RoPE → NoPE** | RoPE @ 10k steps | 6k |
+| scaffold_rope_15k | **RoPE → NoPE** | RoPE @ 15k steps | 1k |
+| scaffold_yarn_10k | **YaRN → NoPE** | YaRN @ 10k steps | 6k |
+| scaffold_yarn_15k | **YaRN → NoPE** | YaRN @ 15k steps | 1k |
+| scaffold_pope_10k | **PoPE → NoPE** | PoPE @ 10k steps | 6k |
+| scaffold_pope_15k | **PoPE → NoPE** | PoPE @ 15k steps | 1k |
+
+Inspired by [DroPE (Sakana AI, 2025)](https://arxiv.org/abs/2512.12167). Scaffold runs use a fresh LR schedule after conversion.
 
 ## Experimental Setup
 
@@ -39,11 +51,13 @@ All models are trained **from random initialization** (not continued pretraining
 - **Evaluation contexts:** 1024, 2048, 4096, 8192, 16384 tokens
 
 ### Training Parameters (based on DroPE paper)
-- **Total steps (S):** 16,000
-- **DroPE switch point (T):** 14,000 (87.5% of training)
+- **Total steps (S):** 16,000 (baselines)
+- **Scaffold switch points:** 10,000 and 15,000 steps
 - **Batch size:** 64
-- **Learning rate:** 3e-4
-- **Warmup:** 3% of steps (~480 steps)
+- **Learning rate (baselines):** 3e-4 → 3e-5 (cosine)
+- **Learning rate (scaffold from 10k):** 1e-4 → 1e-5 (fresh cosine, 180 step warmup)
+- **Learning rate (scaffold from 15k):** 5e-5 → 5e-6 (fresh cosine, 30 step warmup)
+- **Warmup (baselines):** 3% of steps (~480 steps)
 
 ### Evaluation
 - Perplexity at varying context lengths
@@ -82,15 +96,19 @@ python scripts/evaluate.py --checkpoint outputs/rope --eval all --context-length
 
 ```
 positional-embeddings-comparison/
-├── configs/                 # Training configurations
-│   ├── base.yaml            # Shared defaults
-│   ├── rope_scratch.yaml    # RoPE from scratch
-│   ├── nope_scratch.yaml    # NoPE from scratch
-│   ├── pope_scratch.yaml    # PoPE from scratch
-│   ├── yarn_scratch.yaml    # YaRN from scratch
-│   ├── drope_rope.yaml      # RoPE → NoPE at step 14k
-│   ├── drope_yarn.yaml      # YaRN → NoPE at step 14k
-│   └── drope_pope.yaml      # PoPE → NoPE at step 14k
+├── configs/                       # Training configurations
+│   ├── base.yaml                  # Shared defaults (from-scratch)
+│   ├── rope_scratch.yaml          # RoPE from scratch (run 1)
+│   ├── nope_scratch.yaml          # NoPE from scratch (run 0)
+│   ├── pope_scratch.yaml          # PoPE from scratch (run 3)
+│   ├── yarn_scratch.yaml          # YaRN from scratch (run 2)
+│   ├── scaffold_base.yaml         # Shared scaffold defaults
+│   ├── scaffold_rope_10k.yaml     # RoPE→NoPE from 10k checkpoint
+│   ├── scaffold_rope_15k.yaml     # RoPE→NoPE from 15k checkpoint
+│   ├── scaffold_yarn_10k.yaml     # YaRN→NoPE from 10k checkpoint
+│   ├── scaffold_yarn_15k.yaml     # YaRN→NoPE from 15k checkpoint
+│   ├── scaffold_pope_10k.yaml     # PoPE→NoPE from 10k checkpoint
+│   └── scaffold_pope_15k.yaml     # PoPE→NoPE from 15k checkpoint
 ├── src/
 │   ├── models/
 │   │   ├── base.py          # Model factory
@@ -122,28 +140,26 @@ positional-embeddings-comparison/
 ## Reproducing Results
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - PyTorch 2.0+
-- GPU with at least 40GB VRAM (A100 recommended)
-- ~35-50 GPU hours for all 7 experiments
+- GPU with at least 24GB VRAM (RTX 4090 or A100 recommended)
+- ~20-30 GPU hours for all 10 experiments (4 baselines + 6 scaffold)
 
 ### Full reproduction
 
 ```bash
-# Run all 7 experiments sequentially
-./scripts/run_all_experiments.sh
-
-# Or run individually
-python scripts/train.py --config configs/rope_scratch.yaml --seed 42
+# Step 1: Run 4 baseline experiments (16k steps each)
 python scripts/train.py --config configs/nope_scratch.yaml --seed 42
+python scripts/train.py --config configs/rope_scratch.yaml --seed 42
 python scripts/train.py --config configs/yarn_scratch.yaml --seed 42
 python scripts/train.py --config configs/pope_scratch.yaml --seed 42
-python scripts/train.py --config configs/drope_rope.yaml --seed 42
-python scripts/train.py --config configs/drope_yarn.yaml --seed 42
-python scripts/train.py --config configs/drope_pope.yaml --seed 42
 
-# Evaluate all checkpoints
-./scripts/run_evals.sh
+# Step 2: Run 6 scaffold experiments (load baseline checkpoints, convert to NoPE)
+# Requires baseline checkpoints from step 1
+bash scripts/run_scaffold_experiments.sh
+
+# Step 3: Evaluate all checkpoints
+bash scripts/run_evals.sh
 ```
 
 ## Key Findings

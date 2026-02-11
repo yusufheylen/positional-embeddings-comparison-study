@@ -2,8 +2,11 @@
 """Training script for PE comparison study.
 
 Usage:
+    # Baseline training from scratch
     python scripts/train.py --config configs/rope.yaml
-    python scripts/train.py --config configs/drope_from_rope.yaml --seed 43
+
+    # Scaffold training (load PE checkpoint, convert to NoPE, train remaining steps)
+    python scripts/train.py --config configs/scaffold_rope_10k.yaml
 """
 
 import argparse
@@ -13,13 +16,14 @@ from pathlib import Path
 
 import torch
 import yaml
-from transformers import AutoTokenizer, set_seed
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data import get_data_collator, load_dataset_for_training, tokenize_and_chunk_dataset
 from src.models import create_model, get_model_config
+from src.models.embeddings.nope import convert_to_nope
 from src.training import DroPECallback, PETrainer, create_training_args
 
 
@@ -52,6 +56,66 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def load_model_from_checkpoint_as_nope(
+    checkpoint_path: str,
+    model_name_or_path: str,
+    dtype: torch.dtype = torch.bfloat16,
+    attn_implementation: str = "auto",
+) -> AutoModelForCausalLM:
+    """Load model weights from a PE checkpoint and convert to NoPE.
+
+    This loads ONLY the model weights (not optimizer/scheduler state) from a
+    checkpoint that was trained with positional embeddings (RoPE, YaRN, PoPE),
+    then converts the model to use NoPE attention.
+
+    For PoPE checkpoints: Extra PoPE-specific parameters (polar_emb) are ignored
+    since they're not needed for NoPE attention.
+
+    Args:
+        checkpoint_path: Path to the checkpoint directory (e.g., run1_rope/checkpoint-15000)
+        model_name_or_path: Original model identifier for config (e.g., HuggingFaceTB/SmolLM-360M)
+        dtype: Model dtype (default: bfloat16)
+        attn_implementation: Attention implementation to use
+
+    Returns:
+        Model with NoPE attention and weights from the PE checkpoint
+    """
+    from transformers import AutoConfig
+    import logging
+
+    logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+
+    # Load config from original model (not checkpoint) to get clean architecture
+    config = AutoConfig.from_pretrained(model_name_or_path)
+
+    # Auto-detect attention implementation
+    if attn_implementation == "auto":
+        from src.models import get_best_attn_implementation
+        attn_implementation = get_best_attn_implementation()
+
+    config._attn_implementation = attn_implementation
+
+    # Load model weights from checkpoint
+    # ignore_mismatched_sizes handles PoPE's extra parameters gracefully
+    print(f"Loading model weights from: {checkpoint_path}")
+    model = AutoModelForCausalLM.from_pretrained(
+        checkpoint_path,
+        config=config,
+        attn_implementation=attn_implementation,
+        dtype=dtype,  # Use dtype (not torch_dtype) for transformers 5.x
+        ignore_mismatched_sizes=True,  # Handle any size mismatches from PE-specific params
+    )
+
+    # Convert to NoPE
+    print("Converting model to NoPE attention...")
+    model = convert_to_nope(model, attention_type="nope")
+
+    param_count = sum(p.numel() for p in model.parameters())
+    print(f"Loaded model with {param_count:,} parameters, converted to NoPE")
+
+    return model
 
 
 def main():
@@ -95,18 +159,35 @@ def main():
         else:
             tokenizer.pad_token = tokenizer.eos_token
 
-    # Create model
+    # Create model - either from scratch, pretrained, or from PE checkpoint (scaffold)
+    scaffold_cfg = config.get("scaffold")
     pe_type = config.get("pe_type", "rope")
     from_scratch = model_cfg.get("from_scratch", False)
-    print(f"Creating model with PE type: {pe_type}, from_scratch: {from_scratch}")
 
-    model = create_model(
-        model_cfg["name_or_path"],
-        pe_type=pe_type,
-        dtype=getattr(torch, model_cfg.get("dtype", "bfloat16")),
-        attn_implementation=model_cfg.get("attn_implementation", "auto"),
-        from_scratch=from_scratch,
-    )
+    if scaffold_cfg and scaffold_cfg.get("enabled", False):
+        # Scaffold training: load from PE checkpoint, convert to NoPE
+        checkpoint_path = scaffold_cfg["checkpoint_path"]
+        source_pe = scaffold_cfg.get("source_pe", "unknown")
+        print(f"Scaffold training: loading {source_pe} checkpoint from {checkpoint_path}")
+        print(f"Will convert to NoPE and train for remaining steps")
+
+        model = load_model_from_checkpoint_as_nope(
+            checkpoint_path=checkpoint_path,
+            model_name_or_path=model_cfg["name_or_path"],
+            dtype=getattr(torch, model_cfg.get("dtype", "bfloat16")),
+            attn_implementation=model_cfg.get("attn_implementation", "auto"),
+        )
+    else:
+        # Standard training: from scratch or pretrained
+        print(f"Creating model with PE type: {pe_type}, from_scratch: {from_scratch}")
+
+        model = create_model(
+            model_cfg["name_or_path"],
+            pe_type=pe_type,
+            dtype=getattr(torch, model_cfg.get("dtype", "bfloat16")),
+            attn_implementation=model_cfg.get("attn_implementation", "auto"),
+            from_scratch=from_scratch,
+        )
 
     # Load dataset
     data_cfg = config["data"]
@@ -149,6 +230,7 @@ def main():
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 8),
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 8),
         learning_rate=train_cfg.get("learning_rate", 6e-4),
+        min_learning_rate=train_cfg.get("min_learning_rate"),
         weight_decay=train_cfg.get("weight_decay", 0.01),
         warmup_steps=train_cfg.get("warmup_steps", 1000),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),

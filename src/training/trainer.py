@@ -146,7 +146,7 @@ def create_training_args(
     per_device_train_batch_size: int = 8,
     gradient_accumulation_steps: int = 1,
     learning_rate: float = 6e-4,
-    min_lr_ratio: float = 0.1,
+    min_learning_rate: float = None,
     weight_decay: float = 0.01,
     max_grad_norm: float = 1.0,
     warmup_steps: int = 1000,
@@ -174,7 +174,7 @@ def create_training_args(
         per_device_train_batch_size: Batch size per device.
         gradient_accumulation_steps: Gradient accumulation steps.
         learning_rate: Peak learning rate (default: 6e-4 from PoPE paper).
-        min_lr_ratio: Minimum LR as ratio of max (default: 0.1 -> 6e-5).
+        min_learning_rate: Minimum learning rate for cosine scheduler.
         weight_decay: Weight decay coefficient (default: 0.01).
         max_grad_norm: Max gradient norm for clipping (default: 1.0).
         warmup_steps: LR warmup steps (default: 1000).
@@ -194,6 +194,11 @@ def create_training_args(
     Returns:
         Configured TrainingArguments.
     """
+    # Build lr_scheduler_kwargs for minimum LR support
+    lr_scheduler_kwargs = kwargs.pop("lr_scheduler_kwargs", {})
+    if min_learning_rate is not None and lr_scheduler_type == "cosine":
+        lr_scheduler_kwargs["min_lr"] = min_learning_rate
+
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_train_epochs,
@@ -205,6 +210,7 @@ def create_training_args(
         max_grad_norm=max_grad_norm,
         warmup_steps=warmup_steps,
         lr_scheduler_type=lr_scheduler_type,
+        lr_scheduler_kwargs=lr_scheduler_kwargs if lr_scheduler_kwargs else None,
         logging_steps=logging_steps,
         save_steps=save_steps,
         save_total_limit=save_total_limit,
