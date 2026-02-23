@@ -48,6 +48,17 @@ elif command -v nvcc &> /dev/null || [[ -n "$CUDA_HOME" ]]; then
         echo "CUDA version: $CUDA_VERSION"
     fi
 
+    # Ensure CUDA-enabled PyTorch is installed (requirements.txt installs CPU-only torch)
+    echo "Checking PyTorch CUDA support..."
+    TORCH_CUDA=$(python -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
+    if [[ "$TORCH_CUDA" != "True" ]]; then
+        echo "CUDA torch not found — installing PyTorch with CUDA support..."
+        CUDA_TAG="cu$(echo "$CUDA_VERSION" | tr -d '.')"
+        pip install torch --index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
+    else
+        echo "CUDA torch already installed."
+    fi
+
     # Install Flash Attention 2
     echo "Installing Flash Attention 2..."
     pip install flash-attn --no-build-isolation

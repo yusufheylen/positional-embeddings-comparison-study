@@ -4,8 +4,8 @@
 # Usage:
 #   ./scripts/run_all.sh rope                    # Run single experiment
 #   ./scripts/run_all.sh rope --accel zero1      # With accelerate config
-#   ./scripts/run_all.sh all                     # Run all 7 experiments
-#   ./scripts/run_all.sh all --seeds             # Run all with multiple seeds
+#   ./scripts/run_all.sh baselines               # Run all 4 baseline experiments
+#   ./scripts/run_all.sh baselines --seeds       # Run all baselines with multiple seeds
 
 set -e
 
@@ -78,15 +78,6 @@ case "$EXPERIMENT" in
     pope|run3)
         run_with_seeds "pope_scratch"
         ;;
-    drope_rope|run4a)
-        run_with_seeds "drope_rope"
-        ;;
-    drope_yarn|run4b)
-        run_with_seeds "drope_yarn"
-        ;;
-    drope_pope|run4c)
-        run_with_seeds "drope_pope"
-        ;;
     baselines)
         echo "Running baseline experiments (runs 0-3)..."
         run_with_seeds "nope_scratch"
@@ -94,45 +85,25 @@ case "$EXPERIMENT" in
         run_with_seeds "yarn_scratch"
         run_with_seeds "pope_scratch"
         ;;
-    drope)
-        echo "Running DroPE experiments (runs 4a-4c)..."
-        run_with_seeds "drope_rope"
-        run_with_seeds "drope_yarn"
-        run_with_seeds "drope_pope"
-        ;;
     all)
-        echo "Running all 7 experiments..."
-        echo "Run 0: NoPE"
+        # alias for baselines
+        echo "Running baseline experiments (runs 0-3)..."
         run_with_seeds "nope_scratch"
-        echo "Run 1: RoPE"
         run_with_seeds "rope_scratch"
-        echo "Run 2: YaRN"
         run_with_seeds "yarn_scratch"
-        echo "Run 3: PoPE"
         run_with_seeds "pope_scratch"
-        echo "Run 4a: DroPE (RoPE → NoPE)"
-        run_with_seeds "drope_rope"
-        echo "Run 4b: DroPE (YaRN → NoPE)"
-        run_with_seeds "drope_yarn"
-        echo "Run 4c: DroPE (PoPE → NoPE)"
-        run_with_seeds "drope_pope"
         ;;
     *)
-        echo "Usage: $0 {nope|rope|yarn|pope|drope_rope|drope_yarn|drope_pope|baselines|drope|all} [options]"
+        echo "Usage: $0 {nope|rope|yarn|pope|baselines|all} [options]"
         echo ""
         echo "Experiments (from-scratch training, 16k steps):"
         echo "  nope (run0)       - No Positional Embeddings"
         echo "  rope (run1)       - Rotary Position Embeddings"
         echo "  yarn (run2)       - RoPE with YaRN scaling"
         echo "  pope (run3)       - Polar Position Embeddings"
-        echo "  drope_rope (run4a) - DroPE (RoPE → NoPE at 87.5%)"
-        echo "  drope_yarn (run4b) - DroPE (YaRN → NoPE at 87.5%)"
-        echo "  drope_pope (run4c) - DroPE (PoPE → NoPE at 87.5%)"
         echo ""
         echo "Groups:"
-        echo "  baselines         - Run baseline experiments (runs 0-3)"
-        echo "  drope             - Run DroPE experiments (runs 4a-4c)"
-        echo "  all               - Run all 7 experiments"
+        echo "  baselines (all)   - Run all 4 baseline experiments (runs 0-3)"
         echo ""
         echo "Options:"
         echo "  --seeds              - Run with multiple seeds (42, 43, 44)"
@@ -141,7 +112,7 @@ case "$EXPERIMENT" in
         echo "Examples:"
         echo "  $0 rope                          # Single GPU training"
         echo "  $0 rope --accel zero1            # Multi-GPU with ZeRO-1"
-        echo "  $0 all --seeds --accel zero3     # All experiments, multi-seed, ZeRO-3"
+        echo "  $0 baselines --seeds --accel zero3  # All baselines, multi-seed, ZeRO-3"
         exit 1
         ;;
 esac
