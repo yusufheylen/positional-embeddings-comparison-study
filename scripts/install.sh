@@ -60,7 +60,10 @@ elif command -v nvcc &> /dev/null || [[ -n "$CUDA_HOME" ]]; then
     fi
 
     # Install Flash Attention 2
-    echo "Installing Flash Attention 2..."
+    # --no-build-isolation is required: flash-attn's setup.py imports torch to detect CUDA,
+    # so pip must use the current environment rather than creating an isolated build env.
+    # NOTE: this compiles CUDA kernels from source and takes ~20-30 minutes. Do not interrupt.
+    echo "Installing Flash Attention 2 (compiling from source, ~20-30 min)..."
     pip install flash-attn --no-build-isolation
 
     # Install Triton (for custom kernels)
