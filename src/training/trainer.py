@@ -11,11 +11,13 @@ Reference: Adapted from references/DroPE/trainers/
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+from torch.optim.lr_scheduler import LambdaLR
 from transformers import Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
 
@@ -53,6 +55,40 @@ class PETrainer(Trainer):
         self._current_loss = None
         self._current_grad_norm = None
         self._samples_seen = 0
+
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        """Create LR scheduler, implementing min_lr floor manually.
+
+        Transformers' get_cosine_schedule_with_warmup does not accept min_lr
+        in older versions. We pop it from lr_scheduler_kwargs and implement
+        the cosine+min_lr schedule ourselves via LambdaLR.
+        """
+        min_lr = None
+        if (
+            self.args.lr_scheduler_kwargs
+            and "min_lr" in self.args.lr_scheduler_kwargs
+        ):
+            min_lr = self.args.lr_scheduler_kwargs.pop("min_lr")
+
+        if min_lr is not None and self.args.lr_scheduler_type == "cosine":
+            if optimizer is None:
+                optimizer = self.optimizer
+            num_warmup_steps = self.args.warmup_steps
+            min_lr_ratio = min_lr / self.args.learning_rate
+
+            def lr_lambda(current_step: int):
+                if current_step < num_warmup_steps:
+                    return float(current_step) / float(max(1, num_warmup_steps))
+                progress = float(current_step - num_warmup_steps) / float(
+                    max(1, num_training_steps - num_warmup_steps)
+                )
+                cosine_val = 0.5 * (1.0 + math.cos(math.pi * progress))
+                return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_val
+
+            self.lr_scheduler = LambdaLR(optimizer, lr_lambda)
+            return self.lr_scheduler
+
+        return super().create_scheduler(num_training_steps, optimizer)
 
     def get_train_dataloader(self):
         """Get training dataloader with optional sample skipping."""

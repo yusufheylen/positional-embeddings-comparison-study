@@ -261,8 +261,11 @@ class TestModelFactory:
         )
 
         assert config is not None
-        # RoPE should not have rope_scaling set
-        assert not hasattr(config, "rope_scaling") or config.rope_scaling is None
+        # RoPE should not be configured as YaRN (Transformers 5.x may include default RoPE metadata here)
+        rope_scaling = getattr(config, "rope_scaling", None)
+        if rope_scaling is not None:
+            rope_type = rope_scaling.get("type", rope_scaling.get("rope_type"))
+            assert rope_type != "yarn"
 
     def test_get_model_config_yarn(self):
         """Test config creation for YaRN."""

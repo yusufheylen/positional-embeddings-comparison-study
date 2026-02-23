@@ -100,21 +100,28 @@ def qk_norm_nope(
         """NoPE attention with query/key normalization."""
 
         def __init__(self, *args, **kwargs):
-            # Get config before super().__init__
-            signature = inspect.signature(super().__init__)
-            bound_args = signature.bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            config = bound_args.arguments["config"]
+            # Transformers versions differ in how __init__ is exposed (*args/**kwargs vs named config).
+            # Prefer explicit kwargs, then positional arg[0], and only then signature binding fallback.
+            config = kwargs.get("config")
+            if config is None and args:
+                config = args[0]
+            if config is None:
+                signature = inspect.signature(super().__init__)
+                bound_args = signature.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                config = bound_args.arguments.get("config")
+            if config is None:
+                raise ValueError("Could not determine config for QKNormNoPEAttention initialization")
 
             super().__init__(*args, **kwargs)
 
             # Add normalization layers
             self.q_norm = nn.RMSNorm(
-                config.num_attention_heads * config.head_dim,
+                config.num_attention_heads * self.head_dim,
                 config.rms_norm_eps,
             )
             self.k_norm = nn.RMSNorm(
-                config.num_key_value_heads * config.head_dim,
+                config.num_key_value_heads * self.head_dim,
                 config.rms_norm_eps,
             )
 

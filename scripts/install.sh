@@ -60,19 +60,22 @@ elif command -v nvcc &> /dev/null || [[ -n "$CUDA_HOME" ]]; then
     fi
 
     # Install Flash Attention 2
-    # Prefer prebuilt wheel (seconds) over source compilation (20-60 min).
+    # Prefer prebuilt wheel (seconds) over source compilation (20-60 min, can hang).
+    # Uses mjun0812's prebuilt wheel repo which covers recent torch/CUDA combos.
+    # Wheel URL pattern: flash_attn-{FA_VER}+cu{cuda}torch{major.minor}-cp{py}-cp{py}-linux_x86_64.whl
     # --no-build-isolation is required when compiling: flash-attn's setup.py imports torch
     # to detect CUDA, so pip must use the current env rather than an isolated build env.
     # MAX_JOBS caps parallel nvcc processes; without it the build can hang indefinitely.
     FA_VERSION="2.8.3"
-    TORCH_VER=$(python -c "import torch; print(torch.__version__.split('+')[0])")
+    PREBUILD_TAG="v0.7.16"  # update if mjun0812 releases a newer tag with needed wheels
+    TORCH_MINOR=$(python -c "import torch; v=torch.__version__.split('+')[0].split('.'); print(f'{v[0]}.{v[1]}')")
     PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
     CUDA_TAG="cu$(echo "$CUDA_VERSION" | tr -d '.')"
-    WHEEL="${FA_VERSION}+${CUDA_TAG}torch${TORCH_VER}cxx11abiFALSE-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
-    WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VERSION}/flash_attn-${WHEEL}"
+    WHEEL="flash_attn-${FA_VERSION}+${CUDA_TAG}torch${TORCH_MINOR}-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
+    WHEEL_URL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/${PREBUILD_TAG}/${WHEEL}"
 
-    echo "Flash Attention: trying prebuilt wheel for ${CUDA_TAG}, torch ${TORCH_VER}, ${PY_TAG}..."
-    if pip install "$WHEEL_URL" 2>/dev/null; then
+    echo "Flash Attention: trying prebuilt wheel (${CUDA_TAG}, torch${TORCH_MINOR}, ${PY_TAG})..."
+    if pip install "$WHEEL_URL"; then
         echo "Prebuilt wheel installed."
     else
         echo "No prebuilt wheel found — compiling from source (MAX_JOBS=4, ~20 min)..."

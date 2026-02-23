@@ -1,3 +1,4 @@
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +44,8 @@ def test_create_model_nope_applies_conversion(monkeypatch):
 
     monkeypatch.setattr(base, "get_model_config", lambda *_args, **_kwargs: config)
     monkeypatch.setattr(base.AutoModelForCausalLM, "from_pretrained", lambda *_args, **_kwargs: dummy_model)
-    monkeypatch.setattr("src.models.embeddings.nope.convert_to_nope", lambda model, attention_type: converted)
+    nope_module = importlib.import_module("src.models.embeddings.nope")
+    monkeypatch.setattr(nope_module, "convert_to_nope", lambda model, attention_type: converted)
 
     out = base.create_model("dummy", pe_type="nope", attention_type="qk_norm_nope", attn_implementation="eager")
     assert config._attn_implementation == "eager"

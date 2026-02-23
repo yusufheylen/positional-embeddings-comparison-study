@@ -13,10 +13,22 @@ class DummyTokenizer:
     eos_token_id = 2
 
     def __call__(self, text, add_special_tokens=False, return_attention_mask=True):
-        token_count = len(text.split())
+        def encode_one(text_item):
+            token_count = len(text_item.split())
+            return list(range(token_count)), [1] * token_count
+
+        # datasets.map(..., batched=True) passes list[str]
+        if isinstance(text, list):
+            ids, masks = zip(*(encode_one(item) for item in text), strict=False)
+            return {
+                "input_ids": list(ids),
+                "attention_mask": list(masks),
+            }
+
+        input_ids, attention_mask = encode_one(text)
         return {
-            "input_ids": list(range(token_count)),
-            "attention_mask": [1] * token_count,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
         }
 
 
