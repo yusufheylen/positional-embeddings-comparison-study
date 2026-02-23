@@ -60,11 +60,24 @@ elif command -v nvcc &> /dev/null || [[ -n "$CUDA_HOME" ]]; then
     fi
 
     # Install Flash Attention 2
-    # --no-build-isolation is required: flash-attn's setup.py imports torch to detect CUDA,
-    # so pip must use the current environment rather than creating an isolated build env.
-    # NOTE: this compiles CUDA kernels from source and takes ~20-30 minutes. Do not interrupt.
-    echo "Installing Flash Attention 2 (compiling from source, ~20-30 min)..."
-    pip install flash-attn --no-build-isolation
+    # Prefer prebuilt wheel (seconds) over source compilation (20-60 min).
+    # --no-build-isolation is required when compiling: flash-attn's setup.py imports torch
+    # to detect CUDA, so pip must use the current env rather than an isolated build env.
+    # MAX_JOBS caps parallel nvcc processes; without it the build can hang indefinitely.
+    FA_VERSION="2.8.3"
+    TORCH_VER=$(python -c "import torch; print(torch.__version__.split('+')[0])")
+    PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    CUDA_TAG="cu$(echo "$CUDA_VERSION" | tr -d '.')"
+    WHEEL="${FA_VERSION}+${CUDA_TAG}torch${TORCH_VER}cxx11abiFALSE-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
+    WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VERSION}/flash_attn-${WHEEL}"
+
+    echo "Flash Attention: trying prebuilt wheel for ${CUDA_TAG}, torch ${TORCH_VER}, ${PY_TAG}..."
+    if pip install "$WHEEL_URL" 2>/dev/null; then
+        echo "Prebuilt wheel installed."
+    else
+        echo "No prebuilt wheel found — compiling from source (MAX_JOBS=4, ~20 min)..."
+        MAX_JOBS=4 pip install flash-attn --no-build-isolation
+    fi
 
     # Install Triton (for custom kernels)
     echo "Installing Triton..."
