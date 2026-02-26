@@ -33,7 +33,7 @@ def get_yarn_config(
 
     # YaRN scaling configuration
     config.rope_scaling = {
-        "type": "yarn",
+        "rope_type": "yarn",
         "factor": factor,
     }
 
@@ -62,7 +62,7 @@ def get_yarn_scaling_dict(
         Dictionary of YaRN scaling parameters for rope_scaling config.
     """
     scaling = {
-        "type": "yarn",
+        "rope_type": "yarn",
         "factor": factor,
         "beta_fast": beta_fast,
         "beta_slow": beta_slow,

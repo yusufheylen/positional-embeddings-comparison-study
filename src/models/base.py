@@ -60,7 +60,7 @@ def get_model_config(
     # Apply YaRN scaling if requested
     if pe_type == "yarn":
         config.rope_scaling = {
-            "type": "yarn",
+            "rope_type": "yarn",
             "factor": kwargs.get("yarn_factor", 2.0),
         }
 

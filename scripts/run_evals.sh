@@ -19,7 +19,7 @@ BASELINE_DIR="$PROJECT_DIR/../initial-run-outputs/outputs"
 # Default settings
 EVAL_TYPE="all"
 USE_WANDB=false
-CONTEXT_LENGTHS=(2048 4096 8192 16384)
+CONTEXT_LENGTHS=(1024 2048 4096 8192 16384)
 CHECKPOINT=""
 RUN_SET="all"  # all, baselines, scaffold
 

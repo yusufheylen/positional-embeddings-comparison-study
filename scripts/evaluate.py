@@ -50,6 +50,7 @@ def load_model_for_eval(
     pe_type: Optional[str] = None,
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
+    max_context_length: int = 16384,
 ):
     """Load model with correct PE configuration.
 
@@ -58,6 +59,7 @@ def load_model_for_eval(
         pe_type: PE type override. If None, attempts auto-detection.
         device: Device to load model on.
         dtype: Model dtype.
+        max_context_length: Extend max_position_embeddings to this value for eval.
 
     Returns:
         Tuple of (model, tokenizer).
@@ -75,10 +77,23 @@ def load_model_for_eval(
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
 
+    # Load config and apply eval-time fixes
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(checkpoint_path)
+    if hasattr(config, "max_position_embeddings") and config.max_position_embeddings < max_context_length:
+        print(f"Extending max_position_embeddings: {config.max_position_embeddings} -> {max_context_length}")
+        config.max_position_embeddings = max_context_length
+
+    # Normalize rope_scaling key for transformers 5.x (old checkpoints may use "type" instead of "rope_type")
+    if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
+        if "type" in config.rope_scaling and "rope_type" not in config.rope_scaling:
+            config.rope_scaling["rope_type"] = config.rope_scaling.pop("type")
+
     # Load model with correct PE configuration
     model = create_model(
         checkpoint_path,
         pe_type=pe_type,
+        config=config,
         dtype=dtype,
         attn_implementation="eager",  # Use eager for eval compatibility
     )
@@ -203,7 +218,7 @@ def main():
         "--context-lengths",
         type=int,
         nargs="+",
-        default=[2048, 4096, 8192, 16384],
+        default=[1024, 2048, 4096, 8192, 16384],
         help="Context lengths to evaluate",
     )
     parser.add_argument("--output", type=str, default=None, help="Output JSON file")
@@ -226,10 +241,12 @@ def main():
     print(f"Using device: {args.device}")
 
     # Load model
+    max_ctx = max(args.context_lengths)
     model, tokenizer = load_model_for_eval(
         args.checkpoint,
         pe_type=args.pe_type,
         device=args.device,
+        max_context_length=max_ctx,
     )
 
     # Determine PE type for results

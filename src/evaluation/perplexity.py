@@ -7,7 +7,6 @@ beyond training distribution to assess length generalization.
 from typing import Dict, List, Optional
 
 import torch
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
@@ -73,58 +72,49 @@ class PerplexityEvaluator:
     ) -> float:
         """Evaluate perplexity at a specific context length.
 
-        Uses sliding window approach for sequences longer than context_length.
+        Concatenates all texts into a single token sequence, then uses a
+        sliding window approach. This is the standard method (per HF's
+        perplexity tutorial) and avoids skipping short texts.
         """
         if stride is None:
             stride = context_length // 2
 
+        # Concatenate all texts and tokenize as one sequence
+        full_text = "\n\n".join(texts)
+        encodings = self.tokenizer(
+            full_text,
+            return_tensors="pt",
+            truncation=False,
+            add_special_tokens=True,
+        )
+        input_ids = encodings.input_ids.to(self.device)
+        seq_len = input_ids.size(1)
+
+        if seq_len < context_length:
+            print(f"  Warning: total tokens ({seq_len}) < context_length ({context_length}), skipping")
+            return float("inf")
+
         total_loss = 0.0
         total_tokens = 0
 
-        for text in tqdm(texts, desc=f"ctx={context_length}"):
-            # Tokenize
-            encodings = self.tokenizer(
-                text,
-                return_tensors="pt",
-                truncation=False,
-                add_special_tokens=True,
-            )
-            input_ids = encodings.input_ids.to(self.device)
-            seq_len = input_ids.size(1)
+        num_windows = max(1, (seq_len - context_length) // stride + 1)
+        for i, begin in enumerate(tqdm(range(0, seq_len - context_length + 1, stride), desc=f"ctx={context_length}", total=num_windows)):
+            end = begin + context_length
+            window_ids = input_ids[:, begin:end]
+            labels = window_ids.clone()
 
-            # Skip if too short
-            if seq_len < context_length:
-                continue
+            # Mask tokens in the overlap region to avoid double-counting
+            if begin > 0:
+                overlap = context_length - stride
+                labels[:, :overlap] = -100
 
-            # Sliding window evaluation
-            prev_end = 0
-            for begin in range(0, seq_len - context_length + 1, stride):
-                end = begin + context_length
+            outputs = self.model(window_ids, labels=labels)
+            loss = outputs.loss
 
-                # Get window
-                window_ids = input_ids[:, begin:end]
+            num_tokens = (labels != -100).sum().item()
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
 
-                # Create labels (shift by 1 for causal LM)
-                labels = window_ids.clone()
-
-                # Mask tokens that were already evaluated (avoid double counting)
-                if begin > 0:
-                    mask_len = begin - prev_end + stride
-                    labels[:, :mask_len] = -100
-
-                prev_end = end
-
-                # Forward pass
-                outputs = self.model(window_ids, labels=labels)
-                loss = outputs.loss
-
-                # Count non-masked tokens
-                num_tokens = (labels != -100).sum().item()
-
-                total_loss += loss.item() * num_tokens
-                total_tokens += num_tokens
-
-        # Compute perplexity
         if total_tokens == 0:
             return float("inf")
 

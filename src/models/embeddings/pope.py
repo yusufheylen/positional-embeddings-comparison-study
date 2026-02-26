@@ -233,8 +233,9 @@ def pope_attention(BaseAttentionClass: Type[nn.Module]) -> Type[nn.Module]:
             config = source_module.config
             layer_idx = source_module.layer_idx
             device = source_module.o_proj.weight.device
+            dtype = source_module.o_proj.weight.dtype
 
-            new_module = cls(config=config, layer_idx=layer_idx).to(device)
+            new_module = cls(config=config, layer_idx=layer_idx).to(device=device, dtype=dtype)
             # Load weights (strict=False because we have extra parameters)
             new_module.load_state_dict(source_module.state_dict(), strict=False)
 
