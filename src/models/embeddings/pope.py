@@ -128,11 +128,18 @@ def pope_attention(BaseAttentionClass: Type[nn.Module]) -> Type[nn.Module]:
         """Attention with Polar Positional Embeddings (PoPE)."""
 
         def __init__(self, *args, **kwargs):
-            # Get config before super().__init__
-            signature = inspect.signature(super().__init__)
-            bound_args = signature.bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            config = bound_args.arguments["config"]
+            # Transformers versions differ in how __init__ is exposed.
+            # Prefer explicit kwargs, then positional arg[0], then signature binding fallback.
+            config = kwargs.get("config")
+            if config is None and args:
+                config = args[0]
+            if config is None:
+                signature = inspect.signature(super().__init__)
+                bound_args = signature.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                config = bound_args.arguments.get("config")
+            if config is None:
+                raise ValueError("Could not determine config for PoPEAttention initialization")
 
             super().__init__(*args, **kwargs)
 

@@ -7,6 +7,7 @@ Factory pattern adapted from: references/DroPE/custom_models/drope.py
 """
 
 import logging
+from pathlib import Path
 from typing import Optional, Type
 
 import torch
@@ -65,6 +66,41 @@ def get_model_config(
         }
 
     return config
+
+
+def _reload_extra_weights(model: PreTrainedModel, checkpoint_path: str) -> None:
+    """Reload state dict from checkpoint to recover weights dropped by from_pretrained.
+
+    Used when PE conversion adds new parameters (e.g., PoPE's polar_emb) that
+    exist in the checkpoint but were UNEXPECTED for the base model class.
+    """
+    checkpoint_dir = Path(checkpoint_path)
+
+    # Try safetensors first
+    safetensor_files = sorted(checkpoint_dir.glob("model*.safetensors"))
+    if safetensor_files:
+        from safetensors.torch import load_file
+
+        state_dict = {}
+        for f in safetensor_files:
+            state_dict.update(load_file(str(f)))
+        result = model.load_state_dict(state_dict, strict=False)
+        if result.unexpected_keys:
+            logger.debug(f"Unexpected keys after reload: {result.unexpected_keys}")
+        logger.info(f"Reloaded state dict from safetensors ({len(safetensor_files)} file(s))")
+        return
+
+    # Fall back to .bin files
+    bin_files = sorted(checkpoint_dir.glob("pytorch_model*.bin"))
+    if bin_files:
+        state_dict = {}
+        for f in bin_files:
+            state_dict.update(torch.load(str(f), map_location="cpu", weights_only=True))
+        result = model.load_state_dict(state_dict, strict=False)
+        logger.info(f"Reloaded state dict from bin ({len(bin_files)} file(s))")
+        return
+
+    logger.warning(f"No checkpoint files found in {checkpoint_path} for weight reload")
 
 
 def create_model(
@@ -148,6 +184,12 @@ def create_model(
         from .embeddings.pope import convert_to_pope
 
         model = convert_to_pope(model)
+
+        # PoPE adds extra parameters (polar_emb.*) not in base LlamaAttention.
+        # from_pretrained drops these as UNEXPECTED. Reload to recover them.
+        if not from_scratch:
+            _reload_extra_weights(model, model_name_or_path)
+
         logger.info("Converted model to PoPE")
 
     # rope and yarn use native HF implementation (no conversion needed)
