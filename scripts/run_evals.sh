@@ -19,14 +19,22 @@ BASELINE_DIR="$PROJECT_DIR/../initial-run-outputs/outputs"
 # Default settings
 EVAL_TYPE="all"
 USE_WANDB=false
-CONTEXT_LENGTHS="2048 4096 8192 16384"
+CONTEXT_LENGTHS=(2048 4096 8192 16384)
 CHECKPOINT=""
 RUN_SET="all"  # all, baselines, scaffold
+
+usage_error() {
+    echo "Error: $1" >&2
+    exit 1
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --eval)
+            if [[ $# -lt 2 ]] || [[ "$2" == --* ]]; then
+                usage_error "--eval requires a value (perplexity|needle|passkey|all)"
+            fi
             EVAL_TYPE="$2"
             shift 2
             ;;
@@ -35,8 +43,22 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --context-lengths)
-            CONTEXT_LENGTHS="$2"
-            shift 2
+            shift
+            CONTEXT_LENGTHS=()
+            while [[ $# -gt 0 ]]; do
+                if [[ "$1" == --* ]]; then
+                    break
+                fi
+                if [[ "$1" =~ ^[0-9]+$ ]]; then
+                    CONTEXT_LENGTHS+=("$1")
+                    shift
+                else
+                    break
+                fi
+            done
+            if [[ ${#CONTEXT_LENGTHS[@]} -eq 0 ]]; then
+                usage_error "--context-lengths requires one or more integer values"
+            fi
             ;;
         --baselines)
             RUN_SET="baselines"
@@ -46,21 +68,23 @@ while [[ $# -gt 0 ]]; do
             RUN_SET="scaffold"
             shift
             ;;
-        outputs/*|/*)
+        *)
+            if [[ "$1" == --* ]]; then
+                usage_error "Unknown option: $1"
+            fi
+            if [[ -n "$CHECKPOINT" ]]; then
+                usage_error "Multiple checkpoint paths provided: '$CHECKPOINT' and '$1'"
+            fi
             CHECKPOINT="$1"
             shift
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
             ;;
     esac
 done
 
 # Function to run evaluation on a single checkpoint
 run_eval() {
-    local checkpoint=$1
-    local pe_type=$2
+    local checkpoint="$1"
+    local pe_type="$2"
 
     if [ ! -d "$checkpoint" ]; then
         echo "Checkpoint not found: $checkpoint"
@@ -72,13 +96,20 @@ run_eval() {
     echo "PE Type: $pe_type"
     echo "========================================"
 
-    local cmd="python $SCRIPT_DIR/evaluate.py --checkpoint $checkpoint --pe-type $pe_type --eval $EVAL_TYPE --context-lengths $CONTEXT_LENGTHS"
+    local cmd=(
+        python
+        "$SCRIPT_DIR/evaluate.py"
+        --checkpoint "$checkpoint"
+        --pe-type "$pe_type"
+        --eval "$EVAL_TYPE"
+        --context-lengths "${CONTEXT_LENGTHS[@]}"
+    )
 
     if [ "$USE_WANDB" = true ]; then
-        cmd="$cmd --wandb"
+        cmd+=(--wandb)
     fi
 
-    eval $cmd
+    "${cmd[@]}"
 }
 
 # PE type lookup by directory name

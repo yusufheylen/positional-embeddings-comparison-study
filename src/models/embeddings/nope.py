@@ -68,8 +68,9 @@ def nope(BaseAttentionClass: Type[nn.Module]) -> Type[nn.Module]:
             config = source_module.config
             layer_idx = source_module.layer_idx
             device = source_module.o_proj.weight.device
+            dtype = source_module.o_proj.weight.dtype
 
-            new_module = cls(config=config, layer_idx=layer_idx).to(device)
+            new_module = cls(config=config, layer_idx=layer_idx).to(device=device, dtype=dtype)
             new_module.load_state_dict(source_module.state_dict())
 
             # Handle custom softmax scale if present
@@ -133,7 +134,8 @@ def qk_norm_nope(
             """Create from existing attention module."""
             config = source_module.config
             device = next(source_module.parameters()).device
-            new_module = cls(config, source_module.layer_idx).to(device)
+            dtype = next(source_module.parameters()).dtype
+            new_module = cls(config, source_module.layer_idx).to(device=device, dtype=dtype)
             new_module.load_state_dict(source_module.state_dict(), strict=False)
             return new_module
 
